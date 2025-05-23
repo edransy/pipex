@@ -1,0 +1,31 @@
+[package]
+name = "pipex"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A functional pipeline macro for Rust combining sync, async, parallel, and streaming operations"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/edransy/pipex"
+homepage = "https://github.com/edransy/pipex"
+documentation = "https://docs.rs/pipex"
+keywords = ["pipeline", "async", "parallel", "stream", "functional"]
+categories = ["asynchronous", "concurrency", "development-tools"]
+readme = "README.md"
+exclude = [
+    "target/*",
+    ".DS_Store",
+    "examples/performance_analysis.rs"
+]
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+futures = "0.3"
+rayon = "1.7"
+thiserror = "1.0"
+async-trait = "0.1"
+anyhow = "1.0"
+serde = "1.0"
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = "0.5"
