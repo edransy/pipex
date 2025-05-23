@@ -1,8 +1,8 @@
 [package]
 name = "pipex"
 version = "0.1.0"
-edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+edition = "2025"
+authors = ["Your Name <sidrantarik@gmail.com>"]
 description = "A functional pipeline macro for Rust combining sync, async, parallel, and streaming operations"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/edransy/pipex"
