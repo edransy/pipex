@@ -35,8 +35,10 @@
 //! - `async? |x| { ... }` - Async with automatic Result unwrapping
 //!
 
-use futures::{future::join_all, stream, StreamExt};
-use rayon::prelude::*;
+// Re-export dependencies so users don't need to add them explicitly
+pub use futures;
+pub use rayon;
+pub use tokio;
 
 /// The main pipeline macro that enables functional-style data processing 
 /// with sync, async, parallel, and streaming operations.
@@ -58,7 +60,7 @@ macro_rules! pipex {
         let result = {
             let input = pipex!(@ensure_vec $input);
             async {
-                join_all(input.into_iter().map(|$var| async move $body)).await
+                $crate::futures::future::join_all(input.into_iter().map(|$var| async move $body)).await
             }.await
         };
         pipex!(@process result $(=> $($rest)+)?)
@@ -68,11 +70,12 @@ macro_rules! pipex {
     (@process $input:expr => ||| $num_threads:tt |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
         let result = {
             let input = pipex!(@ensure_vec $input);
-            let pool = rayon::ThreadPoolBuilder::new()
+            let pool = $crate::rayon::ThreadPoolBuilder::new()
                 .num_threads($num_threads)
                 .build()
                 .expect("Failed to create thread pool");
             pool.install(|| {
+                use $crate::rayon::prelude::*;
                 input.into_par_iter().map(|$var| $body).collect::<Vec<_>>()
             })
         };
@@ -83,6 +86,7 @@ macro_rules! pipex {
     (@process $input:expr => ||| |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
         let result = {
             let input = pipex!(@ensure_vec $input);
+            use $crate::rayon::prelude::*;
             input.into_par_iter().map(|$var| $body).collect::<Vec<_>>()
         };
         pipex!(@process result $(=> $($rest)+)?)
@@ -92,7 +96,8 @@ macro_rules! pipex {
     (@process $input:expr => ~async $buffer_size:tt |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
         let result = {
             let input = pipex!(@ensure_vec $input);
-            stream::iter(input)
+            use $crate::futures::StreamExt;
+            $crate::futures::stream::iter(input)
                 .map(|$var| async move $body)
                 .buffer_unordered($buffer_size)
                 .collect::<Vec<_>>()
@@ -105,7 +110,8 @@ macro_rules! pipex {
     (@process $input:expr => ~async |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
         let result = {
             let input = pipex!(@ensure_vec $input);
-            stream::iter(input)
+            use $crate::futures::StreamExt;
+            $crate::futures::stream::iter(input)
                 .map(|$var| async move $body)
                 .buffer_unordered(10)  // Default buffer size
                 .collect::<Vec<_>>()
@@ -134,7 +140,7 @@ macro_rules! pipex {
     (@process $input:expr => async? |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
         let result = {
             let input = pipex!(@ensure_vec $input);
-            let futures_results = join_all(input.into_iter().map(|$var| async move $body)).await;
+            let futures_results = $crate::futures::future::join_all(input.into_iter().map(|$var| async move $body)).await;
             futures_results.into_iter().filter_map(Result::ok).collect::<Vec<_>>()
         };
         pipex!(@process result $(=> $($rest)+)?)
@@ -144,18 +150,19 @@ macro_rules! pipex {
     (@process $input:expr => |~| $threads:tt, $buffer:tt |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
         let result = {
             let input = pipex!(@ensure_vec $input);
-            let pool = rayon::ThreadPoolBuilder::new()
+            let pool = $crate::rayon::ThreadPoolBuilder::new()
                 .num_threads($threads)
                 .build()
                 .expect("Failed to create thread pool");
             
             // Create a channel for passing successful results to the thread pool
-            let (tx, mut rx) = tokio::sync::mpsc::channel($buffer);
+            let (tx, mut rx) = $crate::tokio::sync::mpsc::channel($buffer);
             
             // Spawn async tasks and process results immediately
-            let process_handle = tokio::spawn(async move {
+            let process_handle = $crate::tokio::spawn(async move {
+                use $crate::futures::StreamExt;
                 // Process input items with buffered concurrency
-                stream::iter(input)
+                $crate::futures::stream::iter(input)
                     .map(|$var| async move { $body })
                     .buffer_unordered($buffer)
                     .for_each(|res| {
@@ -171,7 +178,7 @@ macro_rules! pipex {
             });
 
             // Spawn a task to collect results in parallel
-            let collection_handle = tokio::task::spawn_blocking(move || {
+            let collection_handle = $crate::tokio::task::spawn_blocking(move || {
                 pool.install(|| {
                     let mut results = Vec::new();
                     while let Some(val) = rx.blocking_recv() {
@@ -192,7 +199,6 @@ macro_rules! pipex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio;
 
     #[test]
     fn test_sync_pipeline() {
