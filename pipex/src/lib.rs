@@ -226,25 +226,23 @@ macro_rules! pipex {
         pipex!(@process iter_result $(=> $($rest)+)?)
     }};
 
-    // Helper pattern to ensure we have a Vec<Result<T, E>>
-    (@ensure_vec $input:expr) => {{
-        $input.into_iter().collect::<Vec<_>>()
-    }};
-
     // ASYNC step - process all items (successful and errors) uniformly
     (@process $input:expr => async |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
         let result = {
-            let input = pipex!(@ensure_vec $input);
             async {
                 let futures_results = $crate::futures::future::join_all(
-                    input.into_iter().map(|item| async move {
+                    $input.into_iter().map(|item| async move {
                         match item {
                             Ok($var) => {
                                 $body
                             },
                             Err(e) => {
-                                // Only stringify if we need to convert types
-                                <_ as $crate::CreateError<_>>::create_error(e)
+                                let mut error_string = format!("{:?}", e);
+                                // Recursively remove nested quotes
+                                while error_string.starts_with("\"") && error_string.ends_with("\"") {
+                                    error_string = error_string[1..error_string.len()-1].to_string();
+                                }
+                                <_ as $crate::CreateError<String>>::create_error(error_string)
                             }
                         }
                     })
