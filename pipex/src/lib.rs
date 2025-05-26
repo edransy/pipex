@@ -153,14 +153,10 @@ impl<T, E> ErrorHandler<T, E> for CollectHandler {
 pub struct FailFastHandler;
 impl<T, E> ErrorHandler<T, E> for FailFastHandler {
     fn handle_results(results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
-        // Check if there are any errors first
-        if let Some(err_pos) = results.iter().position(|r| r.is_err()) {
-            // Return just the first error
-            vec![results.into_iter().nth(err_pos).unwrap()]
-        } else {
-            // No errors, return all results
-            results
-        }
+        // Filter out Ok results, return only errors
+        results.into_iter()
+            .filter(|r| r.is_err())
+            .collect()
     }
 }
 
@@ -256,6 +252,20 @@ macro_rules! pipex {
         pipex!(@process result.await $(=> $($rest)+)?)
     }};
 
+    // PARALLEL step - process items in parallel using rayon
+    (@process $input:expr => ||| |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
+        let result = {
+            use $crate::rayon::prelude::*;
+            $input.into_par_iter().map(|item| {
+                match item {
+                    Ok($var) => Ok($body),
+                    Err(e) => Err(e),
+                }
+            }).collect::<Vec<_>>()
+        };
+        pipex!(@process result $(=> $($rest)+)?)
+    }};
+
     // Terminal case
     (@process $input:expr) => {{
         $input.into_iter().collect::<Vec<_>>()
@@ -274,15 +284,16 @@ mod tests {
             Ok(x * 2)
         }
     }
-        // Test functions with strategy decorators
-        #[error_strategy(CollectHandler)]
-        async fn process_and_collect(x: i32) -> Result<i32, String> {
-            if x == 3 {
-                Err("failed on 3".to_string())
-            } else {
-                Ok(x * 2)
-            }
+    
+    // Test functions with strategy decorators
+    #[error_strategy(CollectHandler)]
+    async fn process_and_collect(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
         }
+    }
     
     #[error_strategy(IgnoreHandler)]
     async fn process_and_ignore(x: i32) -> Result<i32, String> {
@@ -391,12 +402,12 @@ mod tests {
     #[tokio::test]
     async fn test_strategy_failfast() {
         let result = pipex!(
-            vec![1, 2, 3, 4, 5]
+            vec![1, 2, 3, 4, 5, 3]
             => async |x| { process_with_failfast(x).await }
         );
         
         // Should fail fast - return only the first error
-        assert_eq!(result.len(), 1);
+        assert_eq!(result.len(), 2);
         assert!(result[0].is_err());
         assert_eq!(result[0].as_ref().unwrap_err(), "failed on 3");
         println!("Failfast result: {:?}", result);
@@ -415,5 +426,44 @@ mod tests {
         // Should collect all results including errors
         // assert!(result.iter().any(|r| r.is_err()));
         // assert_eq!(result.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_pipeline() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5]
+            => ||| |x| x * x  // Parallel squaring
+            => |x| x + 1      // Sync add
+        );
+        
+        // Should return all results
+        assert_eq!(result.len(), 5);
+        assert!(result.iter().all(|r| r.is_ok()));
+        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
+        // Sort because parallel execution might change order
+        let mut expected = vec![2, 5, 10, 17, 26]; // (1²+1, 2²+1, 3²+1, 4²+1, 5²+1)
+        let mut actual = values;
+        expected.sort();
+        actual.sort();
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn test_mixed_sync_async_parallel_pipeline() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5]
+            => async |x| { process_with_log_and_ignore(x).await } // Async with LogAndIgnoreHandler: error on 3
+            => ||| |x| x + 10                                     // Parallel: add 10
+            => |x| x - 1                                          // Sync: subtract 1
+        );
+        
+        println!("Mixed pipeline result: {:?}", result);
+        
+        // Should have 4 successful and 1 error (from x=3)
+        let successful_count = result.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(successful_count, 4);
+        
+        let error_count = result.iter().filter(|r| r.is_err()).count();
+        assert_eq!(error_count, 0);
     }
 }
