@@ -3,15 +3,62 @@
 //! A powerful functional pipeline macro for Rust that combines synchronous, asynchronous, 
 //! parallel, and streaming operations with extensible error handling via proc macros.
 
-// Re-export the proc macros with clear, non-conflicting names
-pub use pipex_macros::{
-    pipex_ignore, pipex_collect, pipex_fail_fast, pipex_retry
-};
+// Re-export the proc macros
+pub use pipex_macros::pipex_strategy;
 
 // Re-export dependencies
 pub use futures;
 pub use rayon; 
 pub use tokio;
+
+/// Result wrapper that carries strategy information
+#[derive(Debug)]
+pub struct PipexResult<T, E> {
+    pub result: Result<T, E>,
+    pub strategy_name: &'static str,
+}
+
+impl<T, E> PipexResult<T, E> {
+    pub fn new(result: Result<T, E>, strategy_name: &'static str) -> Self {
+        Self {
+            result,
+            strategy_name,
+        }
+    }
+}
+
+/// Trait to handle pipeline results uniformly
+pub trait PipelineResultHandler<T, E> {
+    fn handle_pipeline_results(self) -> Vec<Result<T, E>>;
+}
+
+impl<T, E> PipelineResultHandler<T, E> for Vec<PipexResult<T, E>> {
+    fn handle_pipeline_results(self) -> Vec<Result<T, E>> {
+        if let Some(first) = self.first() {
+            let strategy_name = first.strategy_name;
+            let inner_results: Vec<Result<T, E>> = self
+                .into_iter()
+                .map(|pipex_result| pipex_result.result)
+                .collect();
+            
+            match strategy_name {
+                "ignore" => <IgnoreHandler as ErrorHandler<T, E>>::handle_results(inner_results),
+                "collect" => <CollectHandler as ErrorHandler<T, E>>::handle_results(inner_results),
+                "failfast" => <FailFastHandler as ErrorHandler<T, E>>::handle_results(inner_results),
+                _ => inner_results, // Unknown strategy, return as-is
+            }
+        } else {
+            vec![]
+        }
+    }
+}
+
+impl<T, E> PipelineResultHandler<T, E> for Vec<Result<T, E>> {
+    fn handle_pipeline_results(self) -> Vec<Result<T, E>> {
+        // Regular Results - no strategy, return as-is
+        self
+    }
+}
 
 /// Trait for custom error handling strategies
 pub trait ErrorHandler<T, E> {
@@ -40,19 +87,16 @@ impl<T, E> ErrorHandler<T, E> for CollectHandler {
 pub struct FailFastHandler;
 impl<T, E> ErrorHandler<T, E> for FailFastHandler {
     fn handle_results(results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
-        // Take ownership of the first error if found, otherwise return all results
-        match results.into_iter().find(|r| r.is_err()) {
-            Some(err) => vec![err],
-            None => panic!("hello")
+        // Check if there are any errors first
+        if let Some(err_pos) = results.iter().position(|r| r.is_err()) {
+            // Return just the first error
+            vec![results.into_iter().nth(err_pos).unwrap()]
+        } else {
+            // No errors, return all results
+            results
         }
     }
 }
-
-// // Add the PipexHandler trait
-// pub trait PipexHandler<T, E> {
-//     fn call(&self, input: T) -> impl std::future::Future<Output = Result<T, E>> + Send;
-//     fn error_strategy(&self) -> &'static str;
-// }
 
 /// Main pipeline macro
 #[macro_export]
@@ -68,7 +112,7 @@ macro_rules! pipex {
         pipex!(@process iter_result $(=> $($rest)+)?)
     }};
 
-    // ASYNC step for function calls with .await
+    // ASYNC step - handles both PipexResult and regular Result functions
     (@process $input:expr => async |$var:ident| { $fn_name:ident($($args:tt)*).await } $(=> $($rest:tt)+)?) => {{
         let result = {
             let input = pipex!(@ensure_vec $input);
@@ -77,39 +121,9 @@ macro_rules! pipex {
                     input.into_iter().map(|$var| async move { $fn_name($($args)*).await })
                 ).await;
 
-                // Use the function-specific strategy constant
-                pipex!(@get_strategy $fn_name, results)
-            }.await
-        };
-        pipex!(@process result $(=> $($rest)+)?)
-    }};
-
-    // Strategy lookup helper
-    (@get_strategy $fn_name:ident, $results:expr) => {
-        {
-            let fn_name = stringify!($fn_name);
-            if fn_name.contains("ignore") {
-                <IgnoreHandler as ErrorHandler<_, _>>::handle_results($results)
-            } else if fn_name.contains("collect") {
-                <CollectHandler as ErrorHandler<_, _>>::handle_results($results)
-            } else if fn_name.contains("fail_fast") {
-                <FailFastHandler as ErrorHandler<_, _>>::handle_results($results)
-            } else {
-                // No strategy, return as-is
-                $results
-            }
-        }
-    };
-
-    // Keep the original ASYNC step for other patterns
-    (@process $input:expr => async |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
-        let result = {
-            let input = pipex!(@ensure_vec $input);
-            async {
-                let results = $crate::futures::future::join_all(
-                    input.into_iter().map(|$var| async move $body)
-                ).await;
-
+                // Use the trait to handle results uniformly
+                use $crate::PipelineResultHandler;
+                results.handle_pipeline_results()
             }.await
         };
         pipex!(@process result $(=> $($rest)+)?)
@@ -146,8 +160,8 @@ mod tests {
             => async |x| { simple_double(x).await }
         );
         
-        // This should work since we skip 3
-        // assert_eq!(result, vec![Ok(2), Ok(4), Ok(8), Ok(10)]);
+        // Should return all results including errors (no strategy applied)
+        assert_eq!(result.len(), 4);
     }
 
     #[tokio::test]
@@ -161,43 +175,17 @@ mod tests {
         assert_eq!(result, vec![3, 5, 7, 9, 11]);
     }
 
-    // #[tokio::test]
-    // async fn test_async_with_error_handling_success() {
-    //     let result = pipex!(
-    //         vec![1, 2, 4, 5]  // Skip 3 to avoid errors
-    //         => async? |x| { simple_double(x).await }
-    //     );
-        
-    //     // Should succeed with fail-fast default behavior
-    //     assert_eq!(result, Ok(vec![2, 4, 8, 10]));
-    // }
-
-    // #[tokio::test]
-    // async fn test_async_with_error_handling_failure() {
-    //     let result = pipex!(
-    //         vec![1, 2, 3, 4, 5]  // Include 3 which will fail
-    //         => async? |x| { simple_double(x).await }
-    //     );
-        
-    //     // Should fail fast on 3
-    //     assert!(result.is_err());
-    // }
-
-    // Functions with proc macro attributes - use explicit names to avoid conflicts
-    #[pipex_collect]
+    // Test functions with strategy decorators
+    #[pipex_strategy(CollectHandler)]
     async fn process_with_collect(x: i32) -> Result<i32, String> {
-        eprintln!("process_with_ignore_retry called with x = {}", x);
         if x == 3 {
-            eprintln!("Failing on x = 3");
             Err("failed on 3".to_string())
         } else {
-            let result = x * 2;
-            eprintln!("Success for x = {}, result = {}", x, result);
-            Ok(result)
+            Ok(x * 2)
         }
     }
 
-    #[pipex_ignore]
+    #[pipex_strategy(IgnoreHandler)]
     async fn process_with_ignore(x: i32) -> Result<i32, String> {
         if x == 3 {
             Err("failed on 3".to_string())
@@ -206,68 +194,30 @@ mod tests {
         }
     }
 
-    #[pipex_fail_fast(retry = 5)]
-    async fn process_with_fail_fast_retry(x: i32) -> Result<i32, String> {
-        if x == 999 {
-            Err("should not happen".to_string())
-        } else {
-            Ok(x * 3)
-        }
-    }
-
     #[tokio::test]
-    async fn test_proc_macro_functions_work() {
-        // Test that the proc macro functions compile and work normally
-        let result = process_with_collect(5).await;
-        assert_eq!(result, Ok(10));
-
-        let result = process_with_fail_fast_retry(2).await;
-        assert_eq!(result, Ok(6));
-    }
-
-    #[tokio::test]
-    async fn test_basic_async_error_function_call_with_collect() {
-        eprintln!("\n=== Starting test_basic_async_error_function_call_with_collect ===");
-
-        // Then try with the error-causing value
-        let input_with_error = vec![1, 2, 3, 4, 5];
-        eprintln!("\nTesting with error case: {:?}", input_with_error);
-        let result_with_error = pipex!(
-            input_with_error
+    async fn test_strategy_collect() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5]
             => async |x| { process_with_collect(x).await }
         );
-        eprintln!("Error case result: {:?}", result_with_error);
         
-        // Since we're using collect strategy, we should see all results including errors
-        assert!(result_with_error.iter().any(|r| r.is_err()));
+        println!("result: {:?}", result);
+        // Should collect all results including errors
+        assert!(result.iter().any(|r| r.is_err()));
+        assert_eq!(result.len(), 5);
     }
-
 
     #[tokio::test]
-    async fn test_basic_async_error_function_call_with_ignore() {
-        eprintln!("\n=== Starting test_basic_async_error_function_call_with_ignore ===");
-        
-        // First try without the error-causing value
-        let input_success = vec![1, 2, 4, 5];
-        eprintln!("\nTesting with success case: {:?}", input_success);
-        let result_success = pipex!(
-            input_success
+    async fn test_strategy_ignore() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5]
             => async |x| { process_with_ignore(x).await }
         );
-        eprintln!("Success case result: {:?}", result_success);
+        
+        // Should ignore errors, only return successes
+        assert!(result.iter().all(|r| r.is_ok()));
+        assert_eq!(result.len(), 4); // 3 is filtered out
+        println!("result: {:?}", result);
 
-        // Then try with the error-causing value
-        let input_with_error = vec![1, 2, 3, 4, 5];
-        eprintln!("\nTesting with error case: {:?}", input_with_error);
-        let result_with_error = pipex!(
-            input_with_error
-            => async |x| { process_with_ignore(x).await }
-        );
-        eprintln!("Error case result: {:?}", result_with_error);
-        
-        // Since we're using collect strategy, we should see all results including errors
-        // assert!(result_with_error.iter().any(|r| r.is_err()));
     }
-
-
 }
