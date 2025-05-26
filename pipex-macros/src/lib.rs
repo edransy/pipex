@@ -58,17 +58,8 @@ pub fn error_strategy(args: TokenStream, item: TokenStream) -> TokenStream {
         fn_name.span()
     );
     
-    // Extract strategy name generically from type
+    // Use the full strategy type name as the strategy identifier
     let strategy_type_str = quote!(#strategy_type).to_string();
-    let strategy_name = if strategy_type_str.ends_with("Handler") {
-        // Remove "Handler" suffix and convert to lowercase
-        strategy_type_str
-            .strip_suffix("Handler")
-            .unwrap_or(&strategy_type_str)
-            .to_lowercase()
-    } else {
-        strategy_type_str.to_lowercase()
-    };
     
     // Extract return type from function signature
     let return_type = match &input_fn.sig.output {
@@ -89,7 +80,7 @@ pub fn error_strategy(args: TokenStream, item: TokenStream) -> TokenStream {
         // Public function now returns PipexResult
         #fn_vis async fn #fn_name(#fn_inputs) -> crate::PipexResult<i32, String> {
             let result = #original_impl_name(x).await;
-            crate::PipexResult::new(result, #strategy_name)
+            crate::PipexResult::new(result, #strategy_type_str)
         }
     };
     

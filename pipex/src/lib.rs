@@ -35,17 +35,17 @@ where
     fn handle_pipeline_results(self) -> Vec<Result<T, E>>;
 }
 
-/// Macro to register strategies dynamically
+/// Macro to register strategies dynamically - now much simpler!
 #[macro_export]
 macro_rules! register_strategies {
-    ($($name:literal => $handler:ty),* $(,)?) => {
+    ($($handler:ty),* $(,)?) => {
         pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
         where
             E: std::fmt::Debug,
         {
             match strategy_name {
                 $(
-                    $name => <$handler as $crate::ErrorHandler<T, E>>::handle_results(results),
+                    stringify!($handler) => <$handler as $crate::ErrorHandler<T, E>>::handle_results(results),
                 )*
                 _ => results, // Unknown strategy, return as-is
             }
@@ -53,14 +53,15 @@ macro_rules! register_strategies {
     };
 }
 
-// Register all available strategies
+// Register all available strategies - much cleaner!
 register_strategies! {
-    "ignore" => IgnoreHandler,
-    "collect" => CollectHandler,
-    "failfast" => FailFastHandler,
-    "logandignore" => LogAndIgnoreHandler,
+    IgnoreHandler,
+    CollectHandler,
+    FailFastHandler,
+    LogAndIgnoreHandler,
 }
 
+// PipelineResultHandler implementation for Vec<PipexResult<T, E>>
 impl<T, E> PipelineResultHandler<T, E> for Vec<PipexResult<T, E>> 
 where
     E: std::fmt::Debug,
@@ -162,13 +163,13 @@ macro_rules! pipex {
         pipex!(@process iter_result $(=> $($rest)+)?)
     }};
 
-    // ASYNC step - handles both PipexResult and regular Result functions
-    (@process $input:expr => async |$var:ident| { $fn_name:ident($($args:tt)*).await } $(=> $($rest:tt)+)?) => {{
+    // ASYNC step - captures entire block
+    (@process $input:expr => async |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
         let result = {
             let input = pipex!(@ensure_vec $input);
             async {
                 let results = $crate::futures::future::join_all(
-                    input.into_iter().map(|$var| async move { $fn_name($($args)*).await })
+                    input.into_iter().map(|$var| async move $body)
                 ).await;
 
                 // Use the trait to handle results uniformly
@@ -227,7 +228,7 @@ mod tests {
 
     // Test functions with strategy decorators
     #[error_strategy(CollectHandler)]
-    async fn process_with_collect(x: i32) -> Result<i32, String> {
+    async fn process_and_collect(x: i32) -> Result<i32, String> {
         if x == 3 {
             Err("failed on 3".to_string())
         } else {
@@ -236,7 +237,7 @@ mod tests {
     }
 
     #[error_strategy(IgnoreHandler)]
-    async fn process_with_ignore(x: i32) -> Result<i32, String> {
+    async fn process_and_ignore(x: i32) -> Result<i32, String> {
         if x == 3 {
             Err("failed on 3".to_string())
         } else {
@@ -248,7 +249,7 @@ mod tests {
     async fn test_strategy_collect() {
         let result = pipex!(
             vec![1, 2, 3, 4, 5]
-            => async |x| { process_with_collect(x).await }
+            => async |x| { process_and_collect(x).await }
         );
         
         println!("result: {:?}", result);
@@ -261,7 +262,7 @@ mod tests {
     async fn test_strategy_ignore() {
         let result = pipex!(
             vec![1, 2, 3, 4, 5]
-            => async |x| { process_with_ignore(x).await }
+            => async |x| { process_and_ignore(x).await }
         );
         
         // Should ignore errors, only return successes
@@ -295,5 +296,28 @@ mod tests {
         // Verify the actual values
         let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
         assert_eq!(values, vec![2, 4, 8, 10]); // 1*2, 2*2, 4*2, 5*2
+    }
+
+    #[error_strategy(FailFastHandler)]
+    async fn process_with_failfast(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_strategy_failfast() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5]
+            => async |x| { process_with_failfast(x).await }
+        );
+        
+        // Should fail fast - return only the first error
+        assert_eq!(result.len(), 1);
+        assert!(result[0].is_err());
+        assert_eq!(result[0].as_ref().unwrap_err(), "failed on 3");
+        println!("Failfast result: {:?}", result);
     }
 }
