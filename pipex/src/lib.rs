@@ -243,9 +243,8 @@ macro_rules! pipex {
                                 $body
                             },
                             Err(e) => {
-                                // Create error that matches the type of $body
-                                let error_string = format!("{:?}", e);
-                                <_ as $crate::CreateError<_>>::create_error(error_string)
+                                // Only stringify if we need to convert types
+                                <_ as $crate::CreateError<_>>::create_error(e)
                             }
                         }
                     })
