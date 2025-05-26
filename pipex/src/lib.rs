@@ -28,7 +28,10 @@ impl<T, E> PipexResult<T, E> {
 }
 
 /// Trait to handle pipeline results uniformly
-pub trait PipelineResultHandler<T, E> {
+pub trait PipelineResultHandler<T, E> 
+where
+    E: std::fmt::Debug,
+{
     fn handle_pipeline_results(self) -> Vec<Result<T, E>>;
 }
 
@@ -36,7 +39,10 @@ pub trait PipelineResultHandler<T, E> {
 #[macro_export]
 macro_rules! register_strategies {
     ($($name:literal => $handler:ty),* $(,)?) => {
-        pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
+        pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
+        where
+            E: std::fmt::Debug,
+        {
             match strategy_name {
                 $(
                     $name => <$handler as $crate::ErrorHandler<T, E>>::handle_results(results),
@@ -52,9 +58,13 @@ register_strategies! {
     "ignore" => IgnoreHandler,
     "collect" => CollectHandler,
     "failfast" => FailFastHandler,
+    "logandignore" => LogAndIgnoreHandler,
 }
 
-impl<T, E> PipelineResultHandler<T, E> for Vec<PipexResult<T, E>> {
+impl<T, E> PipelineResultHandler<T, E> for Vec<PipexResult<T, E>> 
+where
+    E: std::fmt::Debug,
+{
     fn handle_pipeline_results(self) -> Vec<Result<T, E>> {
         if let Some(first) = self.first() {
             let strategy_name = first.strategy_name;
@@ -71,7 +81,10 @@ impl<T, E> PipelineResultHandler<T, E> for Vec<PipexResult<T, E>> {
     }
 }
 
-impl<T, E> PipelineResultHandler<T, E> for Vec<Result<T, E>> {
+impl<T, E> PipelineResultHandler<T, E> for Vec<Result<T, E>> 
+where
+    E: std::fmt::Debug,
+{
     fn handle_pipeline_results(self) -> Vec<Result<T, E>> {
         // Regular Results - no strategy, return as-is
         self
@@ -113,6 +126,25 @@ impl<T, E> ErrorHandler<T, E> for FailFastHandler {
             // No errors, return all results
             results
         }
+    }
+}
+
+/// Log and ignore errors strategy
+pub struct LogAndIgnoreHandler;
+impl<T, E> ErrorHandler<T, E> for LogAndIgnoreHandler 
+where
+    E: std::fmt::Debug,
+{
+    fn handle_results(results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
+        results.into_iter()
+            .filter_map(|r| match r {
+                Ok(val) => Some(Ok(val)),
+                Err(err) => {
+                    eprintln!("Pipeline error (ignored): {:?}", err);
+                    None
+                }
+            })
+            .collect()
     }
 }
 
@@ -237,5 +269,31 @@ mod tests {
         assert_eq!(result.len(), 4); // 3 is filtered out
         println!("result: {:?}", result);
 
+    }
+
+    #[error_strategy(LogAndIgnoreHandler)]
+    async fn process_with_log_and_ignore(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_strategy_log_and_ignore() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5]
+            => async |x| { process_with_log_and_ignore(x).await }
+        );
+        
+        // Should log errors and ignore them, only return successes
+        assert!(result.iter().all(|r| r.is_ok()));
+        assert_eq!(result.len(), 4); // 3 is filtered out but logged
+        println!("result: {:?}", result);
+        
+        // Verify the actual values
+        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
+        assert_eq!(values, vec![2, 4, 8, 10]); // 1*2, 2*2, 4*2, 5*2
     }
 }
