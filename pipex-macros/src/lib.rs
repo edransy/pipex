@@ -43,7 +43,7 @@ impl Parse for AttributeArgs {
 /// The strategy name is extracted by removing "Handler" suffix and converting to lowercase.
 /// So "IgnoreHandler" becomes "ignore", "CustomRetryHandler" becomes "customretry", etc.
 #[proc_macro_attribute]
-pub fn pipex_strategy(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn error_strategy(args: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as ItemFn);
     let strategy_type = parse_macro_input!(args as Type);
     

@@ -4,7 +4,7 @@
 //! parallel, and streaming operations with extensible error handling via proc macros.
 
 // Re-export the proc macros
-pub use pipex_macros::pipex_strategy;
+pub use pipex_macros::error_strategy;
 
 // Re-export dependencies
 pub use futures;
@@ -194,7 +194,7 @@ mod tests {
     }
 
     // Test functions with strategy decorators
-    #[pipex_strategy(CollectHandler)]
+    #[error_strategy(CollectHandler)]
     async fn process_with_collect(x: i32) -> Result<i32, String> {
         if x == 3 {
             Err("failed on 3".to_string())
@@ -203,7 +203,7 @@ mod tests {
         }
     }
 
-    #[pipex_strategy(IgnoreHandler)]
+    #[error_strategy(IgnoreHandler)]
     async fn process_with_ignore(x: i32) -> Result<i32, String> {
         if x == 3 {
             Err("failed on 3".to_string())
