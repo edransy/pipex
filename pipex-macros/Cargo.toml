@@ -1,0 +1,15 @@
+[package]
+name = "pipex-macros"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tarik Sidran <sidrantarik@gmail.com>"]
+description = "Procedural macros for pipex"
+license = "MIT"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = { workspace = true }
+syn = { workspace = true, features = ["full", "extra-traits"] } 

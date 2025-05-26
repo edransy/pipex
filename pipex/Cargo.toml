@@ -1,0 +1,27 @@
+[package]
+name = "pipex"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tarik Sidran <sidrantarik@gmail.com>"]
+description = "A functional pipeline macro for Rust combining sync, async, parallel, and streaming operations"
+license = "MIT"
+repository = "https://github.com/edransy/pipex"
+homepage = "https://github.com/edransy/pipex"
+documentation = "https://docs.rs/pipex"
+keywords = ["pipeline", "async", "parallel", "stream", "functional"]
+categories = ["asynchronous", "concurrency", "development-tools"]
+readme = "../README.md"
+
+[dependencies]
+# Import the proc macro crate
+pipex-macros = { path = "../pipex-macros" }
+
+# Regular dependencies
+futures = { workspace = true }
+rayon = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = "0.5"
