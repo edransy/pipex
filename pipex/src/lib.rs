@@ -274,6 +274,42 @@ mod tests {
             Ok(x * 2)
         }
     }
+        // Test functions with strategy decorators
+        #[error_strategy(CollectHandler)]
+        async fn process_and_collect(x: i32) -> Result<i32, String> {
+            if x == 3 {
+                Err("failed on 3".to_string())
+            } else {
+                Ok(x * 2)
+            }
+        }
+    
+    #[error_strategy(IgnoreHandler)]
+    async fn process_and_ignore(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
+
+    #[error_strategy(FailFastHandler)]
+    async fn process_with_failfast(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
+
+    #[error_strategy(LogAndIgnoreHandler)]
+    async fn process_with_log_and_ignore(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
 
     #[tokio::test]
     async fn test_basic_async_pipeline() {
@@ -305,25 +341,6 @@ mod tests {
         assert_eq!(values, vec![3, 5, 7, 9, 11]);
     }
 
-    // Test functions with strategy decorators
-    #[error_strategy(CollectHandler)]
-    async fn process_and_collect(x: i32) -> Result<i32, String> {
-        if x == 3 {
-            Err("failed on 3".to_string())
-        } else {
-            Ok(x * 2)
-        }
-    }
-
-    #[error_strategy(IgnoreHandler)]
-    async fn process_and_ignore(x: i32) -> Result<i32, String> {
-        if x == 3 {
-            Err("failed on 3".to_string())
-        } else {
-            Ok(x * 2)
-        }
-    }
-
     #[tokio::test]
     async fn test_strategy_collect() {
         let result = pipex!(
@@ -351,14 +368,6 @@ mod tests {
 
     }
 
-    #[error_strategy(LogAndIgnoreHandler)]
-    async fn process_with_log_and_ignore(x: i32) -> Result<i32, String> {
-        if x == 3 {
-            Err("failed on 3".to_string())
-        } else {
-            Ok(x * 2)
-        }
-    }
 
     #[tokio::test]
     async fn test_strategy_log_and_ignore() {
@@ -377,14 +386,7 @@ mod tests {
         assert_eq!(values, vec![2, 4, 8, 10]); // 1*2, 2*2, 4*2, 5*2
     }
 
-    #[error_strategy(FailFastHandler)]
-    async fn process_with_failfast(x: i32) -> Result<i32, String> {
-        if x == 3 {
-            Err("failed on 3".to_string())
-        } else {
-            Ok(x * 2)
-        }
-    }
+
 
     #[tokio::test]
     async fn test_strategy_failfast() {
