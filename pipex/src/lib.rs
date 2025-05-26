@@ -35,6 +35,23 @@ where
     fn handle_pipeline_results(self) -> Vec<Result<T, E>>;
 }
 
+/// Trait to extract successful values from pipeline results
+pub trait ExtractSuccessful<T> {
+    fn extract_successful(self) -> Vec<T>;
+}
+
+impl<T> ExtractSuccessful<T> for Vec<T> {
+    fn extract_successful(self) -> Vec<T> {
+        self
+    }
+}
+
+impl<T, E> ExtractSuccessful<T> for Vec<Result<T, E>> {
+    fn extract_successful(self) -> Vec<T> {
+        self.into_iter().filter_map(|r| r.ok()).collect()
+    }
+}
+
 /// Macro to register strategies dynamically - now much simpler!
 #[macro_export]
 macro_rules! register_strategies {
@@ -159,14 +176,18 @@ macro_rules! pipex {
 
     // SYNC step
     (@process $input:expr => |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
-        let iter_result = $input.into_iter().map(|$var| $body);
+        use $crate::ExtractSuccessful;
+        let successful_values = $input.extract_successful();
+        let iter_result = successful_values.into_iter().map(|$var| $body).collect::<Vec<_>>();
         pipex!(@process iter_result $(=> $($rest)+)?)
     }};
 
-    // ASYNC step - captures entire block
+    // ASYNC step - handles both PipexResult and regular Result functions
     (@process $input:expr => async |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
         let result = {
-            let input = pipex!(@ensure_vec $input);
+            use $crate::ExtractSuccessful;
+            let successful_values = $input.extract_successful();
+            let input = pipex!(@ensure_vec successful_values);
             async {
                 let results = $crate::futures::future::join_all(
                     input.into_iter().map(|$var| async move $body)
