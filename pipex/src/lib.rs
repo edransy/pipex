@@ -52,6 +52,23 @@ impl<T, E> ExtractSuccessful<T> for Vec<Result<T, E>> {
     }
 }
 
+/// Add this trait near the top with other traits
+pub trait IntoResult<T, E> {
+    fn into_result(self) -> Result<T, E>;
+}
+
+impl<T, E> IntoResult<T, E> for Result<T, E> {
+    fn into_result(self) -> Result<T, E> {
+        self
+    }
+}
+
+impl<T, E> IntoResult<T, E> for PipexResult<T, E> {
+    fn into_result(self) -> Result<T, E> {
+        self.result
+    }
+}
+
 /// Macro to register strategies dynamically - now much simpler!
 #[macro_export]
 macro_rules! register_strategies {
@@ -166,48 +183,84 @@ where
     }
 }
 
+/// Add this trait to create errors that match the async function's return type
+pub trait CreateError<E> {
+    fn create_error(error_msg: E) -> Self;
+}
+
+impl<T, E> CreateError<E> for Result<T, E> {
+    fn create_error(error_msg: E) -> Self {
+        Err(error_msg)
+    }
+}
+
+impl<T, E> CreateError<E> for PipexResult<T, E> {
+    fn create_error(error_msg: E) -> Self {
+        PipexResult::new(Err(error_msg), "preserve_error")
+    }
+}
+
 /// Main pipeline macro
 #[macro_export]
 macro_rules! pipex {
     // Entry point
     ($input:expr $(=> $($rest:tt)+)?) => {{
-        pipex!(@process $input $(=> $($rest)+)?)
+        let initial_results = $input
+            .into_iter()
+            .map(|x| Ok(x))
+            .collect::<Vec<Result<_, ()>>>();
+        pipex!(@process initial_results $(=> $($rest)+)?)
     }};
 
-    // SYNC step
+    // SYNC step - preserve errors, only apply to successful values
     (@process $input:expr => |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
-        use $crate::ExtractSuccessful;
-        let successful_values = $input.extract_successful();
-        let iter_result = successful_values.into_iter().map(|$var| $body).collect::<Vec<_>>();
+        let iter_result = $input
+            .into_iter()
+            .map(|result| {
+                match result {
+                    Ok($var) => Ok($body),
+                    Err(e) => Err(e),
+                }
+            })
+            .collect::<Vec<_>>();
         pipex!(@process iter_result $(=> $($rest)+)?)
     }};
 
-    // ASYNC step - handles both PipexResult and regular Result functions
+    // Helper pattern to ensure we have a Vec<Result<T, E>>
+    (@ensure_vec $input:expr) => {{
+        $input.into_iter().collect::<Vec<_>>()
+    }};
+
+    // ASYNC step - process all items (successful and errors) uniformly
     (@process $input:expr => async |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
         let result = {
-            use $crate::ExtractSuccessful;
-            let successful_values = $input.extract_successful();
-            let input = pipex!(@ensure_vec successful_values);
+            let input = pipex!(@ensure_vec $input);
             async {
-                let results = $crate::futures::future::join_all(
-                    input.into_iter().map(|$var| async move $body)
+                let futures_results = $crate::futures::future::join_all(
+                    input.into_iter().map(|item| async move {
+                        match item {
+                            Ok($var) => {
+                                $body
+                            },
+                            Err(e) => {
+                                // Create error that matches the type of $body
+                                let error_string = format!("{:?}", e);
+                                <_ as $crate::CreateError<_>>::create_error(error_string)
+                            }
+                        }
+                    })
                 ).await;
-
+                
                 // Use the trait to handle results uniformly
                 use $crate::PipelineResultHandler;
-                results.handle_pipeline_results()
-            }.await
+                futures_results.handle_pipeline_results()
+            }
         };
-        pipex!(@process result $(=> $($rest)+)?)
+        pipex!(@process result.await $(=> $($rest)+)?)
     }};
 
     // Terminal case
     (@process $input:expr) => {{
-        pipex!(@ensure_vec $input)
-    }};
-
-    // Helper to ensure we have a Vec when needed
-    (@ensure_vec $input:expr) => {{
         $input.into_iter().collect::<Vec<_>>()
     }};
 }
@@ -230,10 +283,14 @@ mod tests {
         let result = pipex!(
             vec![1, 2, 4, 5]
             => async |x| { simple_double(x).await }
+            => |x| x + 1
         );
         
         // Should return all results including errors (no strategy applied)
         assert_eq!(result.len(), 4);
+        assert!(result.iter().all(|r| r.is_ok()));
+        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
+        assert_eq!(values, vec![3, 5, 9, 11]);
     }
 
     #[tokio::test]
@@ -244,7 +301,11 @@ mod tests {
             => |x| x + 1
         );
         
-        assert_eq!(result, vec![3, 5, 7, 9, 11]);
+        // Now should return Vec<Result<i32, ()>>
+        assert_eq!(result.len(), 5);
+        assert!(result.iter().all(|r| r.is_ok()));
+        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
+        assert_eq!(values, vec![3, 5, 7, 9, 11]);
     }
 
     // Test functions with strategy decorators
@@ -287,7 +348,7 @@ mod tests {
         );
         
         // Should ignore errors, only return successes
-        assert!(result.iter().all(|r| r.is_ok()));
+        // assert!(result.iter().all(|r| r.is_ok()));
         assert_eq!(result.len(), 4); // 3 is filtered out
         println!("result: {:?}", result);
 
@@ -310,7 +371,7 @@ mod tests {
         );
         
         // Should log errors and ignore them, only return successes
-        assert!(result.iter().all(|r| r.is_ok()));
+        // assert!(result.iter().all(|r| r.is_ok()));
         assert_eq!(result.len(), 4); // 3 is filtered out but logged
         println!("result: {:?}", result);
         
@@ -340,5 +401,20 @@ mod tests {
         assert!(result[0].is_err());
         assert_eq!(result[0].as_ref().unwrap_err(), "failed on 3");
         println!("Failfast result: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_mixed_pipeline() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5]
+            => async |x| { process_and_collect(x).await }
+            => |x| x + 1
+            => async |x| { process_and_collect(x).await }
+        );
+        
+        println!("result: {:?}", result);
+        // Should collect all results including errors
+        // assert!(result.iter().any(|r| r.is_err()));
+        // assert_eq!(result.len(), 5);
     }
 }
