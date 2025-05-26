@@ -85,21 +85,20 @@ macro_rules! pipex {
     }};
 
     // Strategy lookup helper
-    (@get_strategy process_with_ignore, $results:expr) => {
-        <IgnoreHandler as ErrorHandler<_, _>>::handle_results($results)
-    };
-
-    (@get_strategy process_with_collect, $results:expr) => {
-        <CollectHandler as ErrorHandler<_, _>>::handle_results($results)
-    };
-
-    (@get_strategy process_with_fail_fast_retry, $results:expr) => {
-        <FailFastHandler as ErrorHandler<_, _>>::handle_results($results)
-    };
-
-    // Default case - NO error handling, just return results as-is
     (@get_strategy $fn_name:ident, $results:expr) => {
-        $results
+        {
+            let fn_name = stringify!($fn_name);
+            if fn_name.contains("ignore") {
+                <IgnoreHandler as ErrorHandler<_, _>>::handle_results($results)
+            } else if fn_name.contains("collect") {
+                <CollectHandler as ErrorHandler<_, _>>::handle_results($results)
+            } else if fn_name.contains("fail_fast") {
+                <FailFastHandler as ErrorHandler<_, _>>::handle_results($results)
+            } else {
+                // No strategy, return as-is
+                $results
+            }
+        }
     };
 
     // Keep the original ASYNC step for other patterns
