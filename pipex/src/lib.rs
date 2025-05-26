@@ -32,6 +32,28 @@ pub trait PipelineResultHandler<T, E> {
     fn handle_pipeline_results(self) -> Vec<Result<T, E>>;
 }
 
+/// Macro to register strategies dynamically
+#[macro_export]
+macro_rules! register_strategies {
+    ($($name:literal => $handler:ty),* $(,)?) => {
+        pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
+            match strategy_name {
+                $(
+                    $name => <$handler as $crate::ErrorHandler<T, E>>::handle_results(results),
+                )*
+                _ => results, // Unknown strategy, return as-is
+            }
+        }
+    };
+}
+
+// Register all available strategies
+register_strategies! {
+    "ignore" => IgnoreHandler,
+    "collect" => CollectHandler,
+    "failfast" => FailFastHandler,
+}
+
 impl<T, E> PipelineResultHandler<T, E> for Vec<PipexResult<T, E>> {
     fn handle_pipeline_results(self) -> Vec<Result<T, E>> {
         if let Some(first) = self.first() {
@@ -41,12 +63,8 @@ impl<T, E> PipelineResultHandler<T, E> for Vec<PipexResult<T, E>> {
                 .map(|pipex_result| pipex_result.result)
                 .collect();
             
-            match strategy_name {
-                "ignore" => <IgnoreHandler as ErrorHandler<T, E>>::handle_results(inner_results),
-                "collect" => <CollectHandler as ErrorHandler<T, E>>::handle_results(inner_results),
-                "failfast" => <FailFastHandler as ErrorHandler<T, E>>::handle_results(inner_results),
-                _ => inner_results, // Unknown strategy, return as-is
-            }
+            // Use the generated function
+            apply_strategy(strategy_name, inner_results)
         } else {
             vec![]
         }
