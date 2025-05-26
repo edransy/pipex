@@ -252,16 +252,26 @@ macro_rules! pipex {
         pipex!(@process result.await $(=> $($rest)+)?)
     }};
 
-    // PARALLEL step - process items in parallel using rayon
+    // PARALLEL step - process items in parallel with error handling
     (@process $input:expr => ||| |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
         let result = {
             use $crate::rayon::prelude::*;
             $input.into_par_iter().map(|item| {
                 match item {
-                    Ok($var) => Ok($body),
-                    Err(e) => Err(e),
+                    Ok($var) => {
+                        // Wrap the result in Ok() to ensure it's a Result type
+                        Ok($body)
+                    },
+                    Err(e) => {
+                        // Preserve error with smart unnesting
+                        let mut error_string = format!("{:?}", e);
+                        while error_string.starts_with("\"") && error_string.ends_with("\"") {
+                            error_string = error_string[1..error_string.len()-1].to_string();
+                        }
+                        Err(error_string)
+                    }
                 }
-            }).collect::<Vec<_>>()
+            }).collect::<Vec<Result<_, String>>>()
         };
         pipex!(@process result $(=> $($rest)+)?)
     }};
