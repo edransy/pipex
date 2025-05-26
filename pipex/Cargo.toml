@@ -21,6 +21,7 @@ futures = { workspace = true }
 rayon = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+const_format = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

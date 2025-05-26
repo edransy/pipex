@@ -3,6 +3,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, ItemFn, Meta, Expr, Lit, parse::Parse, parse::ParseStream, Token};
+use proc_macro2::Ident as ProcMacroIdent;
 
 /// A simple parser for our attribute arguments
 struct AttributeArgs {
@@ -105,37 +106,118 @@ fn generate_function_with_config(
 /// #[pipex_ignore] - Mark function to use ignore error strategy
 /// Usage: #[pipex_ignore] or #[pipex_ignore(retry = 3)] or #[pipex_ignore(retry = 3, timeout = 1000)]
 #[proc_macro_attribute]
-pub fn pipex_ignore(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn pipex_ignore(_args: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as ItemFn);
-    let attrs = parse_attr_args(args);
+    let fn_name = &input_fn.sig.ident;
+    let fn_vis = &input_fn.vis;
+    let fn_inputs = &input_fn.sig.inputs;
+    let fn_output = &input_fn.sig.output;
+    let fn_body = &input_fn.block;
     
-    let (retry_count, timeout_ms) = parse_common_attributes(&attrs);
+    // Create unique identifiers using the function name
+    let inner_impl_ident = syn::Ident::new(
+        &format!("inner_impl_{}", fn_name),
+        fn_name.span()
+    );
+    let strategy_ident = syn::Ident::new(
+        &format!("STRATEGY_{}", fn_name.to_string().to_uppercase()),
+        fn_name.span()
+    );
     
-    generate_function_with_config(input_fn, "ignore", retry_count, timeout_ms)
+    let expanded = quote! {
+        // Strategy constant at module level
+        #[doc(hidden)]
+        const #strategy_ident: &str = "ignore";
+        
+        // Original function becomes the inner implementation
+        #[doc(hidden)]
+        async fn #inner_impl_ident(#fn_inputs) #fn_output #fn_body
+
+        // Public function that marks for ignore strategy
+        #fn_vis async fn #fn_name(#fn_inputs) #fn_output {
+            #inner_impl_ident(x).await
+        }
+    };
+
+    TokenStream::from(expanded)
 }
 
 /// #[pipex_collect] - Mark function to use collect error strategy  
 /// Usage: #[pipex_collect] or #[pipex_collect(retry = 2)] or #[pipex_collect(retry = 2, timeout = 500)]
 #[proc_macro_attribute]
-pub fn pipex_collect(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn pipex_collect(_args: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as ItemFn);
-    let attrs = parse_attr_args(args);
+    let fn_name = &input_fn.sig.ident;
+    let fn_vis = &input_fn.vis;
+    let fn_inputs = &input_fn.sig.inputs;
+    let fn_output = &input_fn.sig.output;
+    let fn_body = &input_fn.block;
     
-    let (retry_count, timeout_ms) = parse_common_attributes(&attrs);
+    // Create unique identifiers using the function name
+    let inner_impl_ident = syn::Ident::new(
+        &format!("inner_impl_{}", fn_name),
+        fn_name.span()
+    );
+    let strategy_ident = syn::Ident::new(
+        &format!("STRATEGY_{}", fn_name.to_string().to_uppercase()),
+        fn_name.span()
+    );
     
-    generate_function_with_config(input_fn, "collect", retry_count, timeout_ms)
+    let expanded = quote! {
+        // Strategy constant at module level
+        #[doc(hidden)]
+        const #strategy_ident: &str = "collect";
+        
+        // Original function becomes the inner implementation
+        #[doc(hidden)]
+        async fn #inner_impl_ident(#fn_inputs) #fn_output #fn_body
+
+        // Public function that marks for collect strategy
+        #fn_vis async fn #fn_name(#fn_inputs) #fn_output {
+            #inner_impl_ident(x).await
+        }
+    };
+
+    TokenStream::from(expanded)
 }
 
 /// #[pipex_fail_fast] - Mark function to use fail fast error strategy
 /// Usage: #[pipex_fail_fast] or #[pipex_fail_fast(retry = 5)] or #[pipex_fail_fast(retry = 5, timeout = 2000)]
 #[proc_macro_attribute]
-pub fn pipex_fail_fast(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn pipex_fail_fast(_args: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as ItemFn);
-    let attrs = parse_attr_args(args);
+    let fn_name = &input_fn.sig.ident;
+    let fn_vis = &input_fn.vis;
+    let fn_inputs = &input_fn.sig.inputs;
+    let fn_output = &input_fn.sig.output;
+    let fn_body = &input_fn.block;
     
-    let (retry_count, timeout_ms) = parse_common_attributes(&attrs);
+    // Create unique identifiers using the function name
+    let inner_impl_ident = syn::Ident::new(
+        &format!("inner_impl_{}", fn_name),
+        fn_name.span()
+    );
+    let strategy_ident = syn::Ident::new(
+        &format!("STRATEGY_{}", fn_name.to_string().to_uppercase()),
+        fn_name.span()
+    );
     
-    generate_function_with_config(input_fn, "fail_fast", retry_count, timeout_ms)
+    let expanded = quote! {
+        // Strategy constant at module level
+        #[doc(hidden)]
+        const #strategy_ident: &str = "fail_fast";
+        
+        // Original function becomes the inner implementation
+        #[doc(hidden)]
+        async fn #inner_impl_ident(#fn_inputs) #fn_output #fn_body
+
+        // Public function that marks for fail-fast strategy
+        #fn_vis async fn #fn_name(#fn_inputs) #fn_output {
+            #inner_impl_ident(x).await
+        }
+    };
+
+    TokenStream::from(expanded)
 }
 
 /// #[pipex_retry] - Generic retry wrapper that can be combined with other strategies
