@@ -1,11 +1,43 @@
-[workspace]
-resolver = "2"
-members = ["pipex", "pipex-macros"]
+[package]
+name = "pipex"
+version = "0.2.0"
+edition = "2021"
+authors = ["Tarik Sidran <sidrantarik@gmail.com>"]
+description = "A powerful functional pipeline macro for Rust combining sync, async, parallel, and streaming operations with extensible error handling"
+license = "MIT"
+repository = "https://github.com/edransy/pipex"
+homepage = "https://github.com/edransy/pipex"
+documentation = "https://docs.rs/pipex"
+keywords = ["pipeline", "async", "parallel", "functional", "error-handling"]
+categories = ["asynchronous", "concurrency", "development-tools", "rust-patterns"]
+readme = "README.md"
 
-[workspace.dependencies]
-futures = "0.3"
-rayon = "1.7"
-tokio = { version = "1.0", features = ["full"] }
-quote = "1.0"
-syn = { version = "2.0", features = ["full", "extra-traits"] }
-async-trait = "0.1"
+# Include the proc macro crate in the package
+include = [
+    "src/**/*",
+    "pipex-macros/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT"
+]
+
+[dependencies]
+# Proc macro crate dependency - will be bundled when published
+pipex-macros = { path = "./pipex-macros", version = "0.2.0" }
+
+# Regular dependencies
+futures = { version = "0.3", optional = true }
+rayon = { version = "1.7", optional = true }
+tokio = { version = "1.0", features = ["full"], optional = true }
+async-trait = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+tokio-test = "0.4"
+criterion = "0.5"
+
+[features]
+default = ["async", "parallel"]
+async = ["futures", "tokio", "async-trait"]
+parallel = ["rayon"]
+full = ["async", "parallel"]
