@@ -1,56 +1,119 @@
+//! # Pipex Macros
+//! 
+//! Procedural macros for the pipex crate, providing error handling strategies
+//! and pipeline decorators for async functions.
+
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, ItemFn, Meta, Expr, Lit, parse::Parse, parse::ParseStream, Token, Type};
-use proc_macro2::Ident as ProcMacroIdent;
+use syn::{
+    parse_macro_input, ItemFn, Type, ReturnType, GenericArgument, PathArguments,
+    parse::Parse, parse::ParseStream, Error, Result as SynResult
+};
 
-/// A simple parser for our attribute arguments
+/// Parser for attribute arguments
 struct AttributeArgs {
-    args: Vec<Meta>,
+    strategy_type: Type,
 }
 
 impl Parse for AttributeArgs {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut args = Vec::new();
-        
-        while !input.is_empty() {
-            args.push(input.parse::<Meta>()?);
-            if input.peek(Token![,]) {
-                input.parse::<Token![,]>()?;
-            }
-        }
-        
-        Ok(AttributeArgs { args })
+    fn parse(input: ParseStream) -> SynResult<Self> {
+        let strategy_type: Type = input.parse()?;
+        Ok(AttributeArgs { strategy_type })
     }
 }
 
+/// Extract the inner types from Result<T, E>
+fn extract_result_types(return_type: &Type) -> SynResult<(Type, Type)> {
+    if let Type::Path(type_path) = return_type {
+        if let Some(segment) = type_path.path.segments.last() {
+            if segment.ident == "Result" {
+                if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if args.args.len() == 2 {
+                        if let (
+                            GenericArgument::Type(ok_type),
+                            GenericArgument::Type(err_type)
+                        ) = (&args.args[0], &args.args[1]) {
+                            return Ok((ok_type.clone(), err_type.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Err(Error::new_spanned(
+        return_type,
+        "Expected function to return Result<T, E>"
+    ))
+}
 
-/// #[pipex_strategy(StrategyHandler)] - Apply custom strategy to function
+/// The `error_strategy` attribute macro
 /// 
-/// This macro transforms a function to return PipexResult instead of Result,
-/// automatically extracting the strategy name from the handler type.
+/// This macro transforms an async function that returns `Result<T, E>` into one that 
+/// returns `PipexResult<T, E>`, allowing the pipex library to apply the specified
+/// error handling strategy.
 /// 
-/// Example:
+/// # Arguments
+/// 
+/// * `strategy` - The error handling strategy type (e.g., `IgnoreHandler`, `CollectHandler`)
+/// 
+/// # Example
+/// 
 /// ```rust,ignore
-/// #[pipex_strategy(IgnoreHandler)]
-/// async fn my_function(x: i32) -> Result<i32, String> {
-///     // function logic here
-///     Ok(x * 2)
+/// use pipex_macros::error_strategy;
+/// 
+/// #[error_strategy(IgnoreHandler)]
+/// async fn process_item(x: i32) -> Result<i32, String> {
+///     if x % 2 == 0 {
+///         Ok(x * 2)
+///     } else {
+///         Err("Odd number".to_string())
+///     }
 /// }
 /// ```
 /// 
-/// The strategy name is extracted by removing "Handler" suffix and converting to lowercase.
-/// So "IgnoreHandler" becomes "ignore", "CustomRetryHandler" becomes "customretry", etc.
+/// The generated function will automatically wrap the result in a `PipexResult`
+/// with the specified strategy name, allowing the pipeline to handle errors
+/// according to the strategy.
 #[proc_macro_attribute]
 pub fn error_strategy(args: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as ItemFn);
-    let strategy_type = parse_macro_input!(args as Type);
+    let args = parse_macro_input!(args as AttributeArgs);
     
+    let strategy_type = args.strategy_type;
     let fn_name = &input_fn.sig.ident;
     let fn_vis = &input_fn.vis;
     let fn_inputs = &input_fn.sig.inputs;
     let fn_body = &input_fn.block;
+    let fn_asyncness = &input_fn.sig.asyncness;
+    let fn_generics = &input_fn.sig.generics;
+    let where_clause = &input_fn.sig.generics.where_clause;
+    
+    // Validate that the function is async
+    if fn_asyncness.is_none() {
+        return Error::new_spanned(
+            &input_fn.sig,
+            "error_strategy can only be applied to async functions"
+        ).to_compile_error().into();
+    }
+    
+    // Extract return type and validate it's Result<T, E>
+    let (ok_type, err_type) = match &input_fn.sig.output {
+        ReturnType::Type(_, ty) => {
+            match extract_result_types(ty) {
+                Ok(types) => types,
+                Err(e) => return e.to_compile_error().into(),
+            }
+        }
+        ReturnType::Default => {
+            return Error::new_spanned(
+                &input_fn.sig,
+                "Function must return Result<T, E>"
+            ).to_compile_error().into();
+        }
+    };
     
     // Create hidden function name for original implementation
     let original_impl_name = syn::Ident::new(
@@ -58,29 +121,30 @@ pub fn error_strategy(args: TokenStream, item: TokenStream) -> TokenStream {
         fn_name.span()
     );
     
-    // Use the full strategy type name as the strategy identifier
-    let strategy_type_str = quote!(#strategy_type).to_string();
+    // Use the strategy type name as the strategy identifier
+    let strategy_name = quote!(#strategy_type).to_string();
     
-    // Extract return type from function signature
-    let return_type = match &input_fn.sig.output {
-        syn::ReturnType::Type(_, ty) => ty,
-        syn::ReturnType::Default => {
-            return syn::Error::new_spanned(
-                &input_fn.sig,
-                "Function must have an explicit return type"
-            ).to_compile_error().into();
+    // Extract parameter names for the function call
+    let param_names: Vec<_> = input_fn.sig.inputs.iter().filter_map(|arg| {
+        if let syn::FnArg::Typed(pat_type) = arg {
+            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                Some(&pat_ident.ident)
+            } else {
+                None
+            }
+        } else {
+            None
         }
-    };
+    }).collect();
     
     let expanded = quote! {
-        // Hidden original implementation
         #[doc(hidden)]
-        async fn #original_impl_name(#fn_inputs) -> #return_type #fn_body
+        #fn_asyncness fn #original_impl_name #fn_generics (#fn_inputs) -> Result<#ok_type, #err_type> #where_clause
+        #fn_body
         
-        // Public function now returns PipexResult
-        #fn_vis async fn #fn_name(#fn_inputs) -> crate::PipexResult<i32, String> {
-            let result = #original_impl_name(x).await;
-            crate::PipexResult::new(result, #strategy_type_str)
+        #fn_vis #fn_asyncness fn #fn_name #fn_generics (#fn_inputs) -> crate::PipexResult<#ok_type, #err_type> #where_clause {
+            let result = #original_impl_name(#(#param_names),*).await;
+            crate::PipexResult::new(result, #strategy_name)
         }
     };
     
