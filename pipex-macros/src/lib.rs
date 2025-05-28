@@ -36,8 +36,8 @@ fn extract_result_types(return_type: &Type) -> SynResult<(Type, Type)> {
                             GenericArgument::Type(err_type)
                         ) = (&args.args[0], &args.args[1]) {
                             return Ok((ok_type.clone(), err_type.clone()));
-                        }
-                    }
+    }
+}
                 }
             }
         }
