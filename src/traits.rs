@@ -1,11 +1,7 @@
 //! Core traits for pipeline functionality
 
 use crate::PipexResult;
-use crate::handlers::ErrorHandler;  // Import the ErrorHandler trait
-
-// Import apply_strategy from tests module when testing
-#[cfg(test)]
-use crate::tests::apply_strategy;
+use crate::handlers::ErrorHandler;
 
 /// Trait to handle pipeline results uniformly
 /// 

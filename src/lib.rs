@@ -79,44 +79,24 @@ pub use tokio;
 #[cfg_attr(docsrs, doc(cfg(feature = "parallel")))]
 pub use rayon;
 
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
-
-static REGISTERED_HANDLERS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-
-#[doc(hidden)]
-pub fn __register_strategy_name(name: &'static str) {
-    let registry = REGISTERED_HANDLERS.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut registry = registry.lock().unwrap();
-    registry.insert(name);
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-        // Define a custom handler for testing
-        pub struct FirstErrorHandler;
+    // Define a custom handler for testing
+    pub struct FirstErrorHandler;
 
-        impl<T, E> ErrorHandler<T, E> for FirstErrorHandler {
-            fn handle_results(results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
-                // Find the first error and return it, or return empty vec if no errors
-                results.into_iter()
-                    .find(|r| r.is_err())
-                    .map_or(Vec::new(), |e| vec![e])
-            }
+    impl<T, E> ErrorHandler<T, E> for FirstErrorHandler {
+        fn handle_results(results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
+            // Find the first error and return it, or return empty vec if no errors
+            results.into_iter()
+                .find(|r| r.is_err())
+                .map_or(Vec::new(), |e| vec![e])
         }
-    
-        // Register all strategies including our custom one for tests
-        apply_strategies!(
-            IgnoreHandler,
-            CollectHandler, 
-            FailFastHandler,
-            LogAndIgnoreHandler,
-            FirstErrorHandler  // Our custom handler
-        );
+    }
 
+    // Register custom handlers with built-in fallbacks using the new syntax
+    apply_strategies!(FirstErrorHandler; IgnoreHandler, CollectHandler, FailFastHandler, LogAndIgnoreHandler);
 
     // Basic test functions
     async fn simple_double(x: i32) -> Result<i32, String> {

@@ -152,40 +152,118 @@ macro_rules! pipex {
 /// 
 /// # Usage
 /// 
+/// Register custom handlers only:
 /// ```rust,ignore
-/// apply_strategy!(IgnoreHandler, CollectHandler);
+/// apply_strategies!(MyCustomHandler, AnotherHandler);
 /// ```
 /// 
-/// This generates an `apply_strategy` function that supports only the
-/// `IgnoreHandler` and `CollectHandler` strategies.
+/// Register custom handlers with built-in fallbacks:
+/// ```rust,ignore
+/// apply_strategies!(MyCustomHandler; IgnoreHandler, CollectHandler);
+/// ```
+/// 
+/// Register only built-in handlers:
+/// ```rust,ignore
+/// apply_strategies!(; IgnoreHandler, CollectHandler, FailFastHandler);
+/// ```
+/// 
+/// This generates an `apply_strategy` function that supports the specified strategies.
 #[macro_export]
 macro_rules! apply_strategies {
-    ($($handler:ident),+ $(,)?) => {
-        // Generate the function in the current module scope
-        // This will shadow the weak function from the crate root
+    // Custom handlers with built-in fallbacks
+    ($($custom_handler:ident),* $(,)?; $($builtin_handler:ident),+ $(,)?) => {
         pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
         where
-            T: 'static,  // Add static lifetime bound
-            E: std::fmt::Debug + 'static,  // Add static lifetime bound
+            T: 'static,
+            E: std::fmt::Debug + 'static,
         {
             match strategy_name {
                 $(
-                    stringify!($handler) => $handler::handle_results(results),
+                    stringify!($custom_handler) => {
+                        use $crate::ErrorHandler;
+                        $custom_handler::handle_results(results)
+                    },
+                )*
+                $(
+                    stringify!($builtin_handler) => {
+                        use $crate::ErrorHandler;
+                        $crate::$builtin_handler::handle_results(results)
+                    },
                 )+
                 _ => {
-                    // Fallback to built-in strategies if not found in custom handlers
-                    match strategy_name {
-                        "IgnoreHandler" => $crate::IgnoreHandler::handle_results(results),
-                        "CollectHandler" => $crate::CollectHandler::handle_results(results),
-                        "FailFastHandler" => $crate::FailFastHandler::handle_results(results),
-                        "LogAndIgnoreHandler" => $crate::LogAndIgnoreHandler::handle_results(results),
-                        _ => {
-                            eprintln!("Warning: Unknown strategy '{}'. Available strategies: {}", 
-                                strategy_name,
-                                stringify!($($handler),+));
-                            results
-                        }
-                    }
+                    let available_strategies = vec![
+                        $(stringify!($custom_handler),)*
+                        $(stringify!($builtin_handler),)+
+                    ].join(", ");
+                    eprintln!("Warning: Unknown strategy '{}'. Available strategies: {}", 
+                        strategy_name, available_strategies);
+                    results
+                }
+            }
+        }
+    };
+    
+    // Only custom handlers (with automatic built-in fallbacks)
+    ($($handler:ident),+ $(,)?) => {
+        pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
+        where
+            T: 'static,
+            E: std::fmt::Debug + 'static,
+        {
+            match strategy_name {
+                $(
+                    stringify!($handler) => {
+                        use $crate::ErrorHandler;
+                        $handler::handle_results(results)
+                    },
+                )+
+                // Automatic fallback to built-in strategies
+                "IgnoreHandler" => {
+                    use $crate::ErrorHandler;
+                    $crate::IgnoreHandler::handle_results(results)
+                },
+                "CollectHandler" => {
+                    use $crate::ErrorHandler;
+                    $crate::CollectHandler::handle_results(results)
+                },
+                "FailFastHandler" => {
+                    use $crate::ErrorHandler;
+                    $crate::FailFastHandler::handle_results(results)
+                },
+                "LogAndIgnoreHandler" => {
+                    use $crate::ErrorHandler;
+                    $crate::LogAndIgnoreHandler::handle_results(results)
+                },
+                _ => {
+                    let custom_strategies = vec![$(stringify!($handler)),+].join(", ");
+                    let builtin_strategies = "IgnoreHandler, CollectHandler, FailFastHandler, LogAndIgnoreHandler";
+                    eprintln!("Warning: Unknown strategy '{}'. Available strategies: {}, {}", 
+                        strategy_name, custom_strategies, builtin_strategies);
+                    results
+                }
+            }
+        }
+    };
+    
+    // Only built-in handlers (no custom handlers)
+    (; $($builtin_handler:ident),+ $(,)?) => {
+        pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
+        where
+            T: 'static,
+            E: std::fmt::Debug + 'static,
+        {
+            match strategy_name {
+                $(
+                    stringify!($builtin_handler) => {
+                        use $crate::ErrorHandler;
+                        $crate::$builtin_handler::handle_results(results)
+                    },
+                )+
+                _ => {
+                    let available_strategies = vec![$(stringify!($builtin_handler)),+].join(", ");
+                    eprintln!("Warning: Unknown strategy '{}'. Available strategies: {}", 
+                        strategy_name, available_strategies);
+                    results
                 }
             }
         }
