@@ -1,6 +1,6 @@
 [package]
 name = "pipex"
-version = "0.1.4"
+version = "0.1.6"
 edition = "2024"
 authors = ["Tarik Sidran <sidrantarik@gmail.com>"]
 description = "A powerful functional pipeline macro for Rust combining sync, async, parallel, and streaming operations with extensible error handling"
@@ -23,7 +23,7 @@ include = [
 
 [dependencies]
 # Proc macro crate dependency - will be bundled when published
-pipex-macros = { path = "./pipex-macros", version = "0.1.4" }
+pipex-macros = { path = "./pipex-macros", version = "0.1.6" }
 
 # Regular dependencies
 futures = { version = "0.3", optional = true }
