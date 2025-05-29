@@ -118,7 +118,8 @@ where
 // PipelineResultHandler implementation for Vec<PipexResult<T, E>>
 impl<T, E> PipelineResultHandler<T, E> for Vec<PipexResult<T, E>> 
 where
-    E: std::fmt::Debug,
+    T: 'static,                    // Add static lifetime bound
+    E: std::fmt::Debug + 'static,  // Add static lifetime bound
 {
     fn handle_pipeline_results(self) -> Vec<Result<T, E>> {
         if let Some(first) = self.first() {

@@ -165,7 +165,8 @@ macro_rules! apply_strategies {
         // This will shadow the weak function from the crate root
         pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
         where
-            E: std::fmt::Debug,
+            T: 'static,  // Add static lifetime bound
+            E: std::fmt::Debug + 'static,  // Add static lifetime bound
         {
             match strategy_name {
                 $(
