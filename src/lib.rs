@@ -93,7 +93,7 @@ impl<T, E> ErrorHandler<T, E> for FirstErrorHandler {
 }
 
 // Register all handlers including our new custom one
-apply_strategy!(
+apply_strategies!(
     IgnoreHandler, 
     CollectHandler, 
     FailFastHandler, 

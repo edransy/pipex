@@ -159,7 +159,7 @@ macro_rules! pipex {
 /// This generates an `apply_strategy` function that supports only the
 /// `IgnoreHandler` and `CollectHandler` strategies.
 #[macro_export]
-macro_rules! apply_strategy {
+macro_rules! apply_strategies {
     ($($handler:ident),+ $(,)?) => {
         /// Apply error handling strategy to results
         /// 
