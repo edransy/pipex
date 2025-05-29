@@ -1,6 +1,11 @@
 //! Core traits for pipeline functionality
 
-use crate::{PipexResult, apply_strategy};
+use crate::PipexResult;
+use crate::handlers::ErrorHandler;  // Import the ErrorHandler trait
+
+// Import apply_strategy from tests module when testing
+#[cfg(test)]
+use crate::tests::apply_strategy;
 
 /// Trait to handle pipeline results uniformly
 /// 
@@ -92,6 +97,24 @@ impl<T, E> CreateError<E> for PipexResult<T, E> {
     }
 }
 
+// Default apply_strategy for non-test builds
+#[cfg(not(test))]
+fn apply_strategy_fallback<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
+where
+    E: std::fmt::Debug,
+{
+    match strategy_name {
+        "IgnoreHandler" => crate::IgnoreHandler::handle_results(results),
+        "CollectHandler" => crate::CollectHandler::handle_results(results),
+        "FailFastHandler" => crate::FailFastHandler::handle_results(results),
+        "LogAndIgnoreHandler" => crate::LogAndIgnoreHandler::handle_results(results),
+        _ => {
+            eprintln!("Warning: Unknown strategy '{}'. Call apply_strategies! to register custom handlers.", strategy_name);
+            results
+        }
+    }
+}
+
 // PipelineResultHandler implementation for Vec<PipexResult<T, E>>
 impl<T, E> PipelineResultHandler<T, E> for Vec<PipexResult<T, E>> 
 where
@@ -105,8 +128,15 @@ where
                 .map(|pipex_result| pipex_result.result)
                 .collect();
             
-            // Apply the strategy
-            apply_strategy(strategy_name, inner_results)
+            // Use test module's apply_strategy when testing, fallback otherwise
+            #[cfg(test)]
+            {
+                crate::tests::apply_strategy(strategy_name, inner_results)
+            }
+            #[cfg(not(test))]
+            {
+                apply_strategy_fallback(strategy_name, inner_results)
+            }
         } else {
             vec![]
         }

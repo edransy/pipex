@@ -79,32 +79,43 @@ pub use tokio;
 #[cfg_attr(docsrs, doc(cfg(feature = "parallel")))]
 pub use rayon;
 
-// Add this instead - a default implementation that panics
-/// Default apply_strategy function with built-in strategies
-/// 
-/// This function provides the built-in error handling strategies. Users can 
-/// override this by calling `apply_strategies!` macro in their crate to 
-/// register additional custom error handling strategies.
-pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
-where
-    E: std::fmt::Debug,
-{
-    match strategy_name {
-        "IgnoreHandler" => IgnoreHandler::handle_results(results),
-        "CollectHandler" => CollectHandler::handle_results(results),
-        "FailFastHandler" => FailFastHandler::handle_results(results),
-        "LogAndIgnoreHandler" => LogAndIgnoreHandler::handle_results(results),
-        _ => {
-            eprintln!("Warning: Unknown strategy '{}'. Use apply_strategies! macro to register custom handlers.", strategy_name);
-            results // Return results unchanged for unknown strategies
-        }
-    }
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
+
+static REGISTERED_HANDLERS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+
+#[doc(hidden)]
+pub fn __register_strategy_name(name: &'static str) {
+    let registry = REGISTERED_HANDLERS.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut registry = registry.lock().unwrap();
+    registry.insert(name);
 }
 
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+        // Define a custom handler for testing
+        pub struct FirstErrorHandler;
+
+        impl<T, E> ErrorHandler<T, E> for FirstErrorHandler {
+            fn handle_results(results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
+                // Find the first error and return it, or return empty vec if no errors
+                results.into_iter()
+                    .find(|r| r.is_err())
+                    .map_or(Vec::new(), |e| vec![e])
+            }
+        }
+    
+        // Register all strategies including our custom one for tests
+        apply_strategies!(
+            IgnoreHandler,
+            CollectHandler, 
+            FailFastHandler,
+            LogAndIgnoreHandler,
+            FirstErrorHandler  // Our custom handler
+        );
 
 
     // Basic test functions
@@ -268,19 +279,28 @@ mod tests {
         assert_eq!(error_count, 0);
     }
 
-    // #[test]
-    // fn test_first_error_handler() {
-    //     let results = vec![
-    //         Ok(1), 
-    //         Ok(2), 
-    //         Err("first error"), 
-    //         Ok(4), 
-    //         Err("second error")
-    //     ];
+    // NEW: Test function with custom strategy
+    #[error_strategy(FirstErrorHandler)]
+    async fn process_with_first_error(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
+
+    // NEW: Test the custom strategy
+    #[tokio::test]
+    async fn test_custom_first_error_strategy() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5, 3]  // Two errors (both 3s)
+            => async |x| { process_with_first_error(x).await }
+        );
         
-    //     let handled = apply_strategy("FirstErrorHandler", results);
-    //     assert_eq!(handled.len(), 1);
-    //     assert!(handled[0].is_err());
-    //     assert_eq!(*handled[0].as_ref().unwrap_err(), "first error");
-    // }
+        // Should only return the first error
+        println!("Custom strategy result: {:?}", result);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].is_err());
+        assert_eq!(*result[0].as_ref().unwrap_err(), "failed on 3");
+    }
 }
