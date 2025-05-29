@@ -509,7 +509,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pipex"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "criterion",
@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "pipex-macros"
-version = "0.2.0"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",
