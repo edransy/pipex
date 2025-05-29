@@ -79,26 +79,13 @@ pub use tokio;
 #[cfg_attr(docsrs, doc(cfg(feature = "parallel")))]
 pub use rayon;
 
-// Generate the apply_strategy function with all built-in handlers and our custom one
-#[allow(missing_docs)]
-pub struct FirstErrorHandler;
-
-impl<T, E> ErrorHandler<T, E> for FirstErrorHandler {
-    fn handle_results(results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
-        // Find the first error and return it, or return empty vec if no errors
-        results.into_iter()
-            .find(|r| r.is_err())
-            .map_or(Vec::new(), |e| vec![e])
-    }
-}
 
 // Register all handlers including our new custom one
 apply_strategies!(
     IgnoreHandler, 
     CollectHandler, 
     FailFastHandler, 
-    LogAndIgnoreHandler,
-    FirstErrorHandler
+    LogAndIgnoreHandler
 );
 
 
