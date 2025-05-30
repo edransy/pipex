@@ -95,8 +95,8 @@ impl<T, E> CreateError<E> for PipexResult<T, E> {
 // PipelineResultHandler implementation for Vec<PipexResult<T, E>>
 impl<T, E> PipelineResultHandler<T, E> for Vec<PipexResult<T, E>> 
 where
-    T: 'static,                    
-    E: std::fmt::Debug + 'static,  
+    T: 'static + Clone,
+    E: std::fmt::Debug + 'static + Clone,
 {
     fn handle_pipeline_results(self) -> Vec<Result<T, E>> {
         if let Some(first) = self.first() {
@@ -112,8 +112,6 @@ where
             }
             #[cfg(not(test))]
             {
-                // This will call the user's apply_strategy if they defined one,
-                // otherwise it calls the default function
                 crate::apply_strategy(strategy_name, inner_results)
             }
         } else {
