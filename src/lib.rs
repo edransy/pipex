@@ -79,6 +79,25 @@ pub use tokio;
 #[cfg_attr(docsrs, doc(cfg(feature = "parallel")))]
 pub use rayon;
 
+#[allow(missing_docs)]
+// Default apply_strategy function - can be shadowed by user's macro
+pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
+where
+    T: 'static,
+    E: std::fmt::Debug + 'static,
+{
+    match strategy_name {
+        "IgnoreHandler" => IgnoreHandler::handle_results(results),
+        "CollectHandler" => CollectHandler::handle_results(results),
+        "FailFastHandler" => FailFastHandler::handle_results(results),
+        "LogAndIgnoreHandler" => LogAndIgnoreHandler::handle_results(results),
+        _ => {
+            eprintln!("Warning: Unknown strategy '{}'. Call apply_strategies! to register custom handlers.", strategy_name);
+            results
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,7 +115,8 @@ mod tests {
     }
 
     // Register custom handlers with built-in fallbacks using the new syntax
-    apply_strategies!(FirstErrorHandler; IgnoreHandler, CollectHandler, FailFastHandler, LogAndIgnoreHandler);
+    apply_strategies!(FirstErrorHandler, IgnoreHandler, CollectHandler, 
+                      FailFastHandler, LogAndIgnoreHandler);
 
     // Basic test functions
     async fn simple_double(x: i32) -> Result<i32, String> {

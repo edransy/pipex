@@ -1,7 +1,6 @@
 //! Core traits for pipeline functionality
 
 use crate::PipexResult;
-use crate::handlers::ErrorHandler;
 
 /// Trait to handle pipeline results uniformly
 /// 
@@ -93,29 +92,11 @@ impl<T, E> CreateError<E> for PipexResult<T, E> {
     }
 }
 
-// Default apply_strategy for non-test builds
-#[cfg(not(test))]
-fn apply_strategy_fallback<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
-where
-    E: std::fmt::Debug,
-{
-    match strategy_name {
-        "IgnoreHandler" => crate::IgnoreHandler::handle_results(results),
-        "CollectHandler" => crate::CollectHandler::handle_results(results),
-        "FailFastHandler" => crate::FailFastHandler::handle_results(results),
-        "LogAndIgnoreHandler" => crate::LogAndIgnoreHandler::handle_results(results),
-        _ => {
-            eprintln!("Warning: Unknown strategy '{}'. Call apply_strategies! to register custom handlers.", strategy_name);
-            results
-        }
-    }
-}
-
 // PipelineResultHandler implementation for Vec<PipexResult<T, E>>
 impl<T, E> PipelineResultHandler<T, E> for Vec<PipexResult<T, E>> 
 where
-    T: 'static,                    // Add static lifetime bound
-    E: std::fmt::Debug + 'static,  // Add static lifetime bound
+    T: 'static,                    
+    E: std::fmt::Debug + 'static,  
 {
     fn handle_pipeline_results(self) -> Vec<Result<T, E>> {
         if let Some(first) = self.first() {
@@ -125,14 +106,15 @@ where
                 .map(|pipex_result| pipex_result.result)
                 .collect();
             
-            // Use test module's apply_strategy when testing, fallback otherwise
             #[cfg(test)]
             {
                 crate::tests::apply_strategy(strategy_name, inner_results)
             }
             #[cfg(not(test))]
             {
-                apply_strategy_fallback(strategy_name, inner_results)
+                // This will call the user's apply_strategy if they defined one,
+                // otherwise it calls the default function
+                crate::apply_strategy(strategy_name, inner_results)
             }
         } else {
             vec![]

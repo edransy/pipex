@@ -172,6 +172,8 @@ macro_rules! pipex {
 macro_rules! apply_strategies {
     // Custom handlers with built-in fallbacks
     ($($custom_handler:ident),* $(,)?; $($builtin_handler:ident),+ $(,)?) => {
+        // Override the default apply_strategy function in the current scope
+        #[allow(dead_code)]
         pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
         where
             T: 'static,
@@ -217,23 +219,6 @@ macro_rules! apply_strategies {
                         $handler::handle_results(results)
                     },
                 )+
-                // Automatic fallback to built-in strategies
-                "IgnoreHandler" => {
-                    use $crate::ErrorHandler;
-                    $crate::IgnoreHandler::handle_results(results)
-                },
-                "CollectHandler" => {
-                    use $crate::ErrorHandler;
-                    $crate::CollectHandler::handle_results(results)
-                },
-                "FailFastHandler" => {
-                    use $crate::ErrorHandler;
-                    $crate::FailFastHandler::handle_results(results)
-                },
-                "LogAndIgnoreHandler" => {
-                    use $crate::ErrorHandler;
-                    $crate::LogAndIgnoreHandler::handle_results(results)
-                },
                 _ => {
                     let custom_strategies = vec![$(stringify!($handler)),+].join(", ");
                     let builtin_strategies = "IgnoreHandler, CollectHandler, FailFastHandler, LogAndIgnoreHandler";
