@@ -1,7 +1,7 @@
 //! # Pipex Macros
 //! 
 //! Procedural macros for the pipex crate, providing error handling strategies
-//! and pipeline decorators for async functions.
+//! and pipeline decorators for async and sync functions.
 
 extern crate proc_macro;
 
@@ -36,8 +36,8 @@ fn extract_result_types(return_type: &Type) -> SynResult<(Type, Type)> {
                             GenericArgument::Type(err_type)
                         ) = (&args.args[0], &args.args[1]) {
                             return Ok((ok_type.clone(), err_type.clone()));
-    }
-}
+                        }
+                    }
                 }
             }
         }
@@ -51,21 +51,32 @@ fn extract_result_types(return_type: &Type) -> SynResult<(Type, Type)> {
 
 /// The `error_strategy` attribute macro
 /// 
-/// This macro transforms an async function that returns `Result<T, E>` into one that 
+/// This macro transforms a function that returns `Result<T, E>` into one that 
 /// returns `PipexResult<T, E>`, allowing the pipex library to apply the specified
-/// error handling strategy.
+/// error handling strategy. Works with both sync and async functions.
 /// 
 /// # Arguments
 /// 
 /// * `strategy` - The error handling strategy type (e.g., `IgnoreHandler`, `CollectHandler`)
 /// 
-/// # Example
+/// # Examples
 /// 
 /// ```rust,ignore
 /// use pipex_macros::error_strategy;
 /// 
+/// // Async function
 /// #[error_strategy(IgnoreHandler)]
-/// async fn process_item(x: i32) -> Result<i32, String> {
+/// async fn process_item_async(x: i32) -> Result<i32, String> {
+///     if x % 2 == 0 {
+///         Ok(x * 2)
+///     } else {
+///         Err("Odd number".to_string())
+///     }
+/// }
+/// 
+/// // Sync function  
+/// #[error_strategy(CollectHandler)]
+/// fn process_item_sync(x: i32) -> Result<i32, String> {
 ///     if x % 2 == 0 {
 ///         Ok(x * 2)
 ///     } else {
@@ -90,14 +101,6 @@ pub fn error_strategy(args: TokenStream, item: TokenStream) -> TokenStream {
     let fn_asyncness = &input_fn.sig.asyncness;
     let fn_generics = &input_fn.sig.generics;
     let where_clause = &input_fn.sig.generics.where_clause;
-    
-    // Validate that the function is async
-    if fn_asyncness.is_none() {
-        return Error::new_spanned(
-            &input_fn.sig,
-            "error_strategy can only be applied to async functions"
-        ).to_compile_error().into();
-    }
     
     // Extract return type and validate it's Result<T, E>
     let (ok_type, err_type) = match &input_fn.sig.output {
@@ -137,13 +140,22 @@ pub fn error_strategy(args: TokenStream, item: TokenStream) -> TokenStream {
         }
     }).collect();
     
+    // Generate different code based on whether function is async or sync
+    let function_call = if fn_asyncness.is_some() {
+        // Async function - use .await
+        quote! { #original_impl_name(#(#param_names),*).await }
+    } else {
+        // Sync function - no .await
+        quote! { #original_impl_name(#(#param_names),*) }
+    };
+    
     let expanded = quote! {
         #[doc(hidden)]
         #fn_asyncness fn #original_impl_name #fn_generics (#fn_inputs) -> Result<#ok_type, #err_type> #where_clause
         #fn_body
         
         #fn_vis #fn_asyncness fn #fn_name #fn_generics (#fn_inputs) -> crate::PipexResult<#ok_type, #err_type> #where_clause {
-            let result = #original_impl_name(#(#param_names),*).await;
+            let result = #function_call;
             crate::PipexResult::new(result, #strategy_name)
         }
     };

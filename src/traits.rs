@@ -129,4 +129,35 @@ where
         // Regular Results - no strategy, return as-is
         self
     }
-} 
+}
+
+#[doc(hidden)]
+pub trait IntoPipelineItem {
+    type OutputValue;
+    type PipelineItem;
+
+    fn into_pipeline_item(self) -> Self::PipelineItem;
+}
+
+#[doc(hidden)]
+impl<T: 'static, E: std::fmt::Debug> IntoPipelineItem for Result<T, E> {
+    type OutputValue = T;
+    type PipelineItem = Result<T, String>;
+
+    fn into_pipeline_item(self) -> Result<T, String> {
+        self.map_err(|e| format!("{:?}", e))
+    }
+}
+
+#[doc(hidden)]
+impl<T: 'static, E: std::fmt::Debug> IntoPipelineItem for PipexResult<T, E> {
+    type OutputValue = T;
+    type PipelineItem = PipexResult<T, String>;
+
+    fn into_pipeline_item(self) -> PipexResult<T, String> {
+        PipexResult {
+            result: self.result.map_err(|e| format!("{:?}", e)), 
+            strategy_name: self.strategy_name,
+        }
+    }
+}

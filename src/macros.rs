@@ -10,36 +10,6 @@
 /// - `|x| expr` - Synchronous transformation
 /// - `async |x| { ... }` - Asynchronous operation  
 /// - `||| |x| expr` - Parallel processing (requires "parallel" feature)
-/// 
-/// # Examples
-/// 
-/// Basic synchronous pipeline:
-/// ```rust
-/// use pipex::pipex;
-/// 
-/// let result = pipex!(
-///     vec![1, 2, 3]
-///     => |x| x * 2
-///     => |x| x + 1
-/// );
-/// ```
-/// 
-/// Mixed async/sync pipeline:
-/// ```rust,no_run
-/// use pipex::pipex;
-/// 
-/// async fn double(x: i32) -> Result<i32, String> {
-///     Ok(x * 2)
-/// }
-/// 
-/// #[tokio::main]
-/// async fn main() {
-///     let result = pipex!(
-///         vec![1, 2, 3]
-///         => async |x| { double(x).await }
-///         => |x| x + 1
-///     );
-/// }
 /// ```
 #[macro_export]
 macro_rules! pipex {
@@ -52,17 +22,29 @@ macro_rules! pipex {
         pipex!(@process initial_results $(=> $($rest)+)?)
     }};
 
-    // SYNC step - preserve errors, only apply to successful values
+    // SYNC step - process all items (successful and errors) uniformly like async
     (@process $input:expr => |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
-        let iter_result = $input
+        let sync_results = $input
             .into_iter()
-            .map(|result| {
-                match result {
-                    Ok($var) => Ok($body),
-                    Err(e) => Err(e),
+            .map(|item_result| {
+                match item_result {
+                    Ok($var) => {
+                        use $crate::traits::IntoPipelineItem;
+                        ($body).into_pipeline_item()
+                    },
+                    Err(e) => {
+                        let mut error_string = format!("{:?}", e);
+                        while error_string.starts_with("\"") && error_string.ends_with("\"") {
+                            error_string = error_string[1..error_string.len()-1].to_string();
+                        }
+                        <_ as $crate::CreateError<String>>::create_error(error_string)
+                    }
                 }
             })
             .collect::<Vec<_>>();
+        
+        use $crate::PipelineResultHandler;
+        let iter_result = sync_results.handle_pipeline_results();
         pipex!(@process iter_result $(=> $($rest)+)?)
     }};
 
@@ -80,7 +62,6 @@ macro_rules! pipex {
                                 },
                                 Err(e) => {
                                     let mut error_string = format!("{:?}", e);
-                                    // Recursively remove nested quotes
                                     while error_string.starts_with("\"") && error_string.ends_with("\"") {
                                         error_string = error_string[1..error_string.len()-1].to_string();
                                     }
@@ -90,7 +71,6 @@ macro_rules! pipex {
                         })
                     ).await;
                     
-                    // Use the trait to handle results uniformly
                     use $crate::PipelineResultHandler;
                     futures_results.handle_pipeline_results()
                 }
@@ -103,28 +83,30 @@ macro_rules! pipex {
         pipex!(@process result.await $(=> $($rest)+)?)
     }};
 
-    // PARALLEL step - process items in parallel with error handling
+    // PARALLEL step - process items in parallel with uniform error handling
     (@process $input:expr => ||| |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
         let result = {
             #[cfg(feature = "parallel")]
             {
                 use $crate::rayon::prelude::*;
-                $input.into_par_iter().map(|item| {
-                    match item {
+                let parallel_results_intermediate = $input.into_par_iter().map(|item_result| {
+                    match item_result {
                         Ok($var) => {
-                            // Wrap the result in Ok() to ensure it's a Result type
-                            Ok($body)
+                            use $crate::traits::IntoPipelineItem;
+                            ($body).into_pipeline_item()
                         },
                         Err(e) => {
-                            // Preserve error with smart unnesting
                             let mut error_string = format!("{:?}", e);
                             while error_string.starts_with("\"") && error_string.ends_with("\"") {
                                 error_string = error_string[1..error_string.len()-1].to_string();
                             }
-                            Err(error_string)
+                            <_ as $crate::CreateError<String>>::create_error(error_string)
                         }
                     }
-                }).collect::<Vec<Result<_, String>>>()
+                }).collect::<Vec<_>>();
+
+                use $crate::PipelineResultHandler;
+                parallel_results_intermediate.handle_pipeline_results()
             }
             #[cfg(not(feature = "parallel"))]
             {
@@ -152,40 +134,9 @@ macro_rules! pipex {
 /// ```
 #[macro_export]
 macro_rules! register_strategies {
-    ($($name:expr => $handler:expr),+ $(,)?) => {
-        {
-            $(
-                $crate::register_strategy($name, $handler);
-            )+
-        }
+    ($($handler:ident),+ $(,)? for <$t:ty, $e:ty>) => {
+        $(
+            $crate::register_strategy::<$t, $e>(stringify!($handler), $handler::handle_results);
+        )+
     };
 }
-
-// #[doc(hidden)]
-// Keep the old apply_strategies! macro for backward compatibility but make it much simpler
-// #[macro_export]
-// macro_rules! apply_strategies {
-//     ($($handler:ident),+ $(,)?) => {
-//         // Auto-register the handlers
-//         {
-//             $(
-//                 $crate::register_strategy(stringify!($handler), $handler::handle_results);
-//             )+
-//         }
-//     };
-    
-//     // Custom handlers with built-in fallbacks
-//     ($($custom_handler:ident),* $(,)?; $($builtin_handler:ident),+ $(,)?) => {
-//         // Just register the custom handlers - built-ins are always available
-//         {
-//             $(
-//                 $crate::register_strategy(stringify!($custom_handler), $custom_handler::handle_results);
-//             )*
-//         }
-//     };
-    
-//     // Only built-in handlers (no-op)
-//     (; $($builtin_handler:ident),+ $(,)?) => {
-//         // Nothing to register - built-ins are always available
-//     };
-// }
