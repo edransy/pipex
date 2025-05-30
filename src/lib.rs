@@ -8,7 +8,7 @@
 
 // Core modules
 mod result;
-mod traits;
+pub mod traits;
 mod handlers;
 mod macros;
 
@@ -352,3 +352,11 @@ mod tests {
         assert_eq!(result, expected_values, "Final values do not match expected values.");
     }
 }
+
+// It's also good practice to explicitly re-export items that macros need,
+// especially if they are somewhat internal.
+// This makes the macro's dependency on $crate::traits::IntoPipelineItem robust.
+#[doc(hidden)]
+pub use traits::IntoPipelineItem as __InternalIntoPipelineItem; // Re-export for macro under a hidden name
+                                                                 // The macro can then use $crate::__InternalIntoPipelineItem
+                                                                 // OR, if the `traits` module is pub, $crate::traits::IntoPipelineItem works.
