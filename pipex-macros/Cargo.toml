@@ -1,6 +1,6 @@
 [package]
 name = "pipex-macros"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2024"
 authors = ["Tarik Sidran <sidrantarik@gmail.com>"]
 description = "Procedural macros for the pipex crate - error handling strategies and pipeline decorators"

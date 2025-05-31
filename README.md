@@ -9,8 +9,8 @@ A powerful functional pipeline macro for Rust that combines synchronous, asynchr
 ## ✨ Features
 
 - **🔄 Sync Operations**: Chain regular synchronous transformations
-- **⚡ Async Operations**: Handle asynchronous work with automatic await
-- **🚀 Parallel Processing**: Leverage multiple CPU cores with Rayon (optional)
+- **⚡ Async Operations**: Handle asynchronous work
+- **🚀 Parallel Processing**: Leverage multiple CPU cores with Rayon
 - **🛡️ Error Handling**: Extensible error handling strategies via proc macros
 - **🔀 Mixed Workloads**: Seamlessly combine different operation types
 - **📦 Modular**: Optional features for async and parallel processing
@@ -20,37 +20,21 @@ A powerful functional pipeline macro for Rust that combines synchronous, asynchr
 Add this to your `Cargo.toml`:
 
 ```toml
+[features]
+default = ["async", "parallel"]
+async = []
+parallel = []
+
 [dependencies]
-pipex = "0.2.0"
-
-# For async features
-tokio = { version = "1", features = ["full"] }
+pipex = { version = "0.1.13", features = ["full"] }
+tokio = { version = "1", features = ["full", "macros", "rt-multi-thread"] }
 ```
 
-### Basic Synchronous Example
-
-```rust
-use pipex::pipex;
-
-fn main() {
-    let result = pipex!(
-        vec![1, 2, 3, 4, 5]
-        => |x| x * 2
-        => |x| x + 1
-    );
-    
-    // Extract successful values
-    let values: Vec<i32> = result.into_iter()
-        .filter_map(|r| r.ok())
-        .collect();
-    println!("{:?}", values); // [3, 5, 7, 9, 11]
-}
-```
 
 ### Error Handling Strategies
 
 ```rust
-use pipex::{pipex, error_strategy, IgnoreHandler, CollectHandler};
+use pipex::*;
 
 #[error_strategy(IgnoreHandler)]
 async fn process_even(x: i32) -> Result<i32, String> {
@@ -98,8 +82,8 @@ fn heavy_computation(n: i32) -> i32 {
 async fn main() {
     let result = pipex!(
         vec![100, 200, 300, 400, 500]
-        => ||| |n| heavy_computation(n)  // Parallel processing
-        => |result| format!("Computed: {}", result)
+        => ||| |n| { heavy_computation(n) } // Parallel processing
+        => |result| Ok::<_, String>(format!("Computed: {}", result))
     );
     
     println!("Results: {:?}", result);
@@ -110,9 +94,9 @@ async fn main() {
 
 | Syntax | Description | Example | Requires Feature |
 |--------|-------------|---------|------------------|
-| `\|x\| expr` | Synchronous transformation | `\|x\| x * 2` | None |
+| `\|x\| expr` | Synchronous transformation | `\|x\| Ok::<_, String>(x * 2)` | None |
 | `async \|x\| { ... }` | Asynchronous operation | `async \|x\| { fetch(x).await }` | `async` |
-| `\|\|\| \|x\| expr` | Parallel processing | `\|\|\| \|x\| cpu_work(x)` | `parallel` |
+| `\|\|\| \|x\| { ... }` | Parallel processing | `\|\|\| \|x\| { cpu_work(x) }` | `parallel` |
 
 ## 🛡️ Error Handling Strategies
 
@@ -130,24 +114,65 @@ Pipex provides several built-in error handling strategies:
 You can implement your own error handling strategies:
 
 ```rust
-use pipex::{ErrorHandler, error_strategy};
+use pipex::*;
 
-struct RetryHandler;
+// Example: A handler that collects only successful results and reverses their order.
+pub struct ReverseSuccessHandler;
 
-impl<T, E> ErrorHandler<T, E> for RetryHandler 
-where 
-    E: std::fmt::Debug 
-{
+impl<T, E> ErrorHandler<T, E> for ReverseSuccessHandler {
     fn handle_results(results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
-        // Custom retry logic here
-        results
+        let mut successes: Vec<Result<T, E>> = results
+            .into_iter()
+            .filter(|r| r.is_ok())
+            .collect();
+        successes.reverse();
+        successes
     }
 }
 
-#[error_strategy(RetryHandler)]
-async fn risky_operation(x: i32) -> Result<i32, String> {
-    // Your async operation
-    Ok(x)
+#[error_strategy(ReverseSuccessHandler)]
+async fn process_items_with_reverse(x: i32) -> Result<i32, String> {
+    if x == 3 { // Example condition for failure
+        Err("processing failed for item 3".to_string())
+    } else {
+        Ok(x * 2) // Example processing for success
+    }
+}
+```
+
+### Registering Custom Strategies
+
+For `pipex` to recognize and use your custom error handlers with specific data types (e.g. `Result<i32, String>`), you may need to register them. This is typically done once, for instance, at the beginning of your `main` function, using the `register_strategies!` macro.
+
+This macro ensures that the procedural macros used by `pipex` can correctly associate your handlers with the functions they annotate.
+
+```rust
+use pipex::*;
+
+// Assuming LastErrorHandler and ReverseSuccessHandler are defined structs
+// that implement the ErrorHandler<T, E> trait. For example:
+pub struct LastErrorHandler;
+impl<T, E> ErrorHandler<T, E> for LastErrorHandler { /* ... */ }
+
+pub struct ReverseSuccessHandler; // As defined in the example above
+impl<T, E> ErrorHandler<T, E> for ReverseSuccessHandler { /* ... */ }
+
+
+#[tokio::main]
+fn main() {
+    // Register your custom handlers for specific type signatures
+    register_strategies!(
+        LastErrorHandler, ReverseSuccessHandler for <i32, String>
+    );
+
+    // Now, functions like:
+    #[error_strategy(LastErrorHandler)]
+    async fn my_func_last_error(x: i32) -> Result<i32, String> { ... }
+
+    #[error_strategy(ReverseSuccessHandler)]
+    async fn my_func_reverse(x: i32) -> Result<i32, String> { ... }
+
+    // ...can be used in pipex! pipelines that operate on Result<i32, String>.
 }
 ```
 
@@ -156,8 +181,7 @@ async fn risky_operation(x: i32) -> Result<i32, String> {
 ### Data Processing Pipeline
 
 ```rust
-use pipex::{pipex, error_strategy, LogAndIgnoreHandler};
-use tokio;
+use pipex::*;
 
 #[error_strategy(LogAndIgnoreHandler)]
 async fn fetch_user_data(id: i32) -> Result<String, String> {
@@ -182,60 +206,16 @@ async fn main() {
     let result = pipex!(
         user_ids
         => async |id| { fetch_user_data(id).await }  // Async fetch with error handling
-        => ||| |data| process_data(data)             // Parallel processing
-        => |count| format!("Processed {} chars", count)  // Final transformation
+        => ||| |data| { process_data(data) }         // Parallel processing
+        => |count| Ok::<_, String>(format!("Processed {} chars", count)) // Final transformation
     );
     
     println!("Processed {} users successfully", result.len());
 }
 ```
 
-### Mixed Synchronous and Asynchronous Pipeline
 
-```rust
-use pipex::{pipex, error_strategy, CollectHandler};
-use tokio;
 
-#[error_strategy(CollectHandler)]
-async fn async_double(x: i32) -> Result<i32, String> {
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    Ok(x * 2)
-}
-
-#[tokio::main]
-async fn main() {
-    let numbers = vec![1, 2, 3, 4, 5];
-    
-    let result = pipex!(
-        numbers
-        => |x| x + 1                           // Sync: add 1
-        => async |x| { async_double(x).await } // Async: double
-        => ||| |x| x * x                       // Parallel: square
-        => |x| x - 1                           // Sync: subtract 1
-    );
-    
-    println!("Final results: {:?}", result);
-}
-```
-
-## 🎯 Features Configuration
-
-Pipex uses feature flags to keep dependencies minimal:
-
-```toml
-[dependencies]
-# Minimal installation (sync operations only)
-pipex = { version = "0.2.0", default-features = false }
-
-# With async support
-pipex = { version = "0.2.0", features = ["async"] }
-
-# With parallel support  
-pipex = { version = "0.2.0", features = ["parallel"] }
-
-# Full installation (recommended)
-pipex = "0.2.0"  # Includes async and parallel by default
-```
 
 ## 📋 Requirements
 
