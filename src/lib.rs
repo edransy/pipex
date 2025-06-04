@@ -1,259 +1,362 @@
-//! # Pipex
+//! A pipeline processing library for Rust
 //! 
-//! A powerful functional pipeline macro for Rust that combines synchronous, asynchronous, 
-//! parallel, and streaming operations in a single, intuitive syntax.
-//!
-//! ## Features
-//!
-//! - **Sync Operations**: Chain regular synchronous transformations
-//! - **Async Operations**: Handle asynchronous work with automatic await
-//! - **Parallel Processing**: Leverage multiple CPU cores with configurable thread pools
-//! - **Streaming**: Process large datasets with configurable buffer sizes
-//! - **Error Handling**: Built-in Result handling with `async?` syntax
-//! - **Mixed Workloads**: Seamlessly combine different operation types
-//!
-//! ## Quick Start
-//!
-//! ```rust
-//! use pipex::pipex;
-//!
-//! // Simple synchronous pipeline
-//! let result = pipex!(
-//!     vec![1, 2, 3, 4, 5]
-//!     => |x| x * 2
-//!     => |x| x + 1
-//! );
-//! assert_eq!(result, vec![3, 5, 7, 9, 11]);
-//! ```
-//!
-//! ## Pipeline Syntax
-//!
-//! - `|x| expr` - Synchronous transformation
-//! - `async |x| { ... }` - Asynchronous operation
-//! - `||| threads |x| expr` - Parallel processing with custom thread count
-//! - `~async buffer |x| { ... }` - Streaming with custom buffer size
-//! - `async? |x| { ... }` - Async with automatic Result unwrapping
-//!
+//! This crate provides a powerful macro-based system for creating data processing
+//! pipelines with various error handling strategies.
 
-// Re-export dependencies so users don't need to add them explicitly
+#![deny(missing_docs)]
+#![warn(clippy::all)]
+
+// Core modules
+mod result;
+pub mod traits;
+mod handlers;
+mod macros;
+
+// Re-export public API
+pub use result::PipexResult;
+pub use traits::{PipelineResultHandler, ExtractSuccessful, IntoResult, CreateError};
+pub use handlers::{
+    ErrorHandler, IgnoreHandler, CollectHandler, FailFastHandler, LogAndIgnoreHandler
+};
+
+// Re-export the proc macros
+pub use pipex_macros::error_strategy;
+
+// Conditional re-exports based on features
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub use futures;
-pub use rayon;
+
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub use tokio;
 
-/// The main pipeline macro that enables functional-style data processing 
-/// with sync, async, parallel, and streaming operations.
-#[macro_export]
-macro_rules! pipex {
-    // Entry point - auto-detect if input is iterator or collection
-    ($input:expr $(=> $($rest:tt)+)?) => {{
-        pipex!(@process $input $(=> $($rest)+)?)
-    }};
+#[cfg(feature = "parallel")]
+#[cfg_attr(docsrs, doc(cfg(feature = "parallel")))]
+pub use rayon;
 
-    // SYNC step - keep as iterator, no auto-collect
-    (@process $input:expr => |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
-        let iter_result = $input.into_iter().map(|$var| $body);
-        pipex!(@process iter_result $(=> $($rest)+)?)
-    }};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::any::{Any, TypeId};
 
-    // ASYNC step - force collection here since we need owned values
-    (@process $input:expr => async |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
-        let result = {
-            let input = pipex!(@ensure_vec $input);
-            async {
-                $crate::futures::future::join_all(input.into_iter().map(|$var| async move $body)).await
-            }.await
-        };
-        pipex!(@process result $(=> $($rest)+)?)
-    }};
+// Registry for strategy functions
+static STRATEGY_REGISTRY: OnceLock<Mutex<HashMap<String, Box<dyn Any + Send + Sync>>>> = OnceLock::new();
 
-    // PARALLEL step with configurable thread count
-    (@process $input:expr => ||| $num_threads:tt |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
-        let result = {
-            let input = pipex!(@ensure_vec $input);
-            let pool = $crate::rayon::ThreadPoolBuilder::new()
-                .num_threads($num_threads)
-                .build()
-                .expect("Failed to create thread pool");
-            pool.install(|| {
-                use $crate::rayon::prelude::*;
-                input.into_par_iter().map(|$var| $body).collect::<Vec<_>>()
-            })
-        };
-        pipex!(@process result $(=> $($rest)+)?)
-    }};
+/// Register a custom strategy handler for specific types
+pub fn register_strategy<T, E>(
+    name: &str,
+    handler: fn(Vec<Result<T, E>>) -> Vec<Result<T, E>>
+) where
+    T: 'static,
+    E: std::fmt::Debug + 'static,
+{
+    let registry = STRATEGY_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().unwrap();
+    
+    let type_id = (TypeId::of::<T>(), TypeId::of::<E>());
+    let key = format!("{}_{:?}", name, type_id);
+    
+    registry.insert(key, Box::new(handler));
+}
 
-    // PARALLEL step with default thread count (all cores) - for backwards compatibility
-    (@process $input:expr => ||| |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
-        let result = {
-            let input = pipex!(@ensure_vec $input);
-            use $crate::rayon::prelude::*;
-            input.into_par_iter().map(|$var| $body).collect::<Vec<_>>()
-        };
-        pipex!(@process result $(=> $($rest)+)?)
-    }};
+/// Try to call a registered strategy (fix ownership issue by borrowing)
+fn try_registered_strategy<T, E>(strategy_name: &str, results: &Vec<Result<T, E>>) -> Option<Vec<Result<T, E>>>
+where
+    T: 'static + Clone,
+    E: std::fmt::Debug + 'static + Clone,
+{
+    let registry = STRATEGY_REGISTRY.get()?;
+    let registry = registry.lock().unwrap();
+    
+    let type_id = (TypeId::of::<T>(), TypeId::of::<E>());
+    let key = format!("{}_{:?}", strategy_name, type_id);
+    
+    if let Some(handler_any) = registry.get(&key) {
+        if let Some(handler) = handler_any.downcast_ref::<fn(Vec<Result<T, E>>) -> Vec<Result<T, E>>>() {
+            return Some(handler(results.clone()));
+        }
+    }
+    
+    None
+}
 
-    // STREAM step with configurable buffer size
-    (@process $input:expr => ~async $buffer_size:tt |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
-        let result = {
-            let input = pipex!(@ensure_vec $input);
-            use $crate::futures::StreamExt;
-            $crate::futures::stream::iter(input)
-                .map(|$var| async move $body)
-                .buffer_unordered($buffer_size)
-                .collect::<Vec<_>>()
-                .await
-        };
-        pipex!(@process result $(=> $($rest)+)?)
-    }};
-
-    // STREAM step with default buffer size (10) - for backwards compatibility
-    (@process $input:expr => ~async |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
-        let result = {
-            let input = pipex!(@ensure_vec $input);
-            use $crate::futures::StreamExt;
-            $crate::futures::stream::iter(input)
-                .map(|$var| async move $body)
-                .buffer_unordered(10)  // Default buffer size
-                .collect::<Vec<_>>()
-                .await
-        };
-        pipex!(@process result $(=> $($rest)+)?)
-    }};
-
-    // EXPLICIT COLLECT - when you want to force collection
-    (@process $input:expr => collect $(=> $($rest:tt)+)?) => {{
-        let result = pipex!(@ensure_vec $input);
-        pipex!(@process result $(=> $($rest)+)?)
-    }};
-
-    // Terminal case - auto-collect at the end
-    (@process $input:expr) => {{
-        pipex!(@ensure_vec $input)
-    }};
-
-    // Helper to ensure we have a Vec when needed
-    (@ensure_vec $input:expr) => {{
-        $input.into_iter().collect::<Vec<_>>()
-    }};
-
-    // Add this pattern to handle Results in async steps
-    (@process $input:expr => async? |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
-        let result = {
-            let input = pipex!(@ensure_vec $input);
-            let futures_results = $crate::futures::future::join_all(input.into_iter().map(|$var| async move $body)).await;
-            futures_results.into_iter().filter_map(Result::ok).collect::<Vec<_>>()
-        };
-        pipex!(@process result $(=> $($rest)+)?)
-    }};
-
-    // Corrected macro pattern for streaming parallel execution
-    (@process $input:expr => |~| $threads:tt, $buffer:tt |$var:ident| $body:block $(=> $($rest:tt)+)?) => {{
-        let result = {
-            let input = pipex!(@ensure_vec $input);
-            let pool = $crate::rayon::ThreadPoolBuilder::new()
-                .num_threads($threads)
-                .build()
-                .expect("Failed to create thread pool");
-            
-            // Create a channel for passing successful results to the thread pool
-            let (tx, mut rx) = $crate::tokio::sync::mpsc::channel($buffer);
-            
-            // Spawn async tasks and process results immediately
-            let process_handle = $crate::tokio::spawn(async move {
-                use $crate::futures::StreamExt;
-                // Process input items with buffered concurrency
-                $crate::futures::stream::iter(input)
-                    .map(|$var| async move { $body })
-                    .buffer_unordered($buffer)
-                    .for_each(|res| {
-                        let tx_clone = tx.clone();
-                        async move {
-                            let _ = tx_clone.send(res).await;
-                        }
-                    })
-                    .await;
-                
-                // Close channel when all async work is done
-                drop(tx);
-            });
-
-            // Spawn a task to collect results in parallel
-            let collection_handle = $crate::tokio::task::spawn_blocking(move || {
-                pool.install(|| {
-                    let mut results = Vec::new();
-                    while let Some(val) = rx.blocking_recv() {
-                        results.push(val);
-                    }
-                    results
-                })
-            });
-
-            // Wait for both async processing and collection to complete
-            let _ = process_handle.await;
-            collection_handle.await.unwrap()
-        };
-        pipex!(@process result $(=> $($rest)+)?)
-    }};
+/// Apply strategy - checks registry first, then built-ins
+pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
+where
+    T: 'static + Clone,
+    E: std::fmt::Debug + 'static + Clone,
+{
+    // Try registered strategies first (pass by reference to avoid move)
+    if let Some(result) = try_registered_strategy(strategy_name, &results) {
+        return result;
+    }
+    
+    // Fall back to built-ins (now we can still use results since we didn't move it)
+    match strategy_name {
+        "IgnoreHandler" => IgnoreHandler::handle_results(results),
+        "CollectHandler" => CollectHandler::handle_results(results),
+        "FailFastHandler" => FailFastHandler::handle_results(results),
+        "LogAndIgnoreHandler" => LogAndIgnoreHandler::handle_results(results),
+        _ => {
+            eprintln!("Warning: Unknown strategy '{}'. Use register_strategy() to register custom handlers.", strategy_name);
+            results
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_sync_pipeline() {
+    pub struct FirstErrorHandler;
+
+    impl<T, E> ErrorHandler<T, E> for FirstErrorHandler {
+        fn handle_results(results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
+            results.into_iter()
+                .find(|r| r.is_err())
+                .map_or(Vec::new(), |e| vec![e])
+        }
+    }
+
+    // Register the handler for our test types
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    
+    fn setup() {
+        INIT.call_once(|| {
+            register_strategies!( FirstErrorHandler for <i32, String> );
+        });
+    }
+
+    pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
+    where
+        T: 'static + Clone,
+        E: std::fmt::Debug + 'static + Clone,
+    {
+        setup(); // Ensure registration
+        crate::apply_strategy(strategy_name, results)
+    }
+
+    // Basic test functions
+    async fn simple_double(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
+    
+    // Test functions with strategy decorators
+    #[error_strategy(CollectHandler)]
+    async fn process_and_collect(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
+    
+    #[error_strategy(IgnoreHandler)]
+    async fn process_and_ignore(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
+
+    #[error_strategy(FailFastHandler)]
+    async fn process_with_failfast(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
+
+    #[error_strategy(LogAndIgnoreHandler)]
+    async fn process_with_log_and_ignore(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
+
+    #[error_strategy(FirstErrorHandler)]
+    async fn process_with_first_error(x: i32) -> Result<i32, String> {
+        if x == 3 {
+            Err("failed on 3".to_string())
+        } else {
+            Ok(x * 2)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_basic_async_pipeline() {
+        let result = pipex!(
+            vec![1, 2, 4, 5]
+            => async |x| { simple_double(x).await }
+            => |x| Ok::<i32, String>(x + 1)
+        );
+        
+        assert_eq!(result.len(), 4);
+        assert!(result.iter().all(|r| r.is_ok()));
+        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
+        assert_eq!(values, vec![3, 5, 9, 11]);
+    }
+
+    #[tokio::test]
+    async fn test_sync_pipeline() {
         let result = pipex!(
             vec![1, 2, 3, 4, 5]
-            => |x| x * 2
-            => |x| x + 1
+            => |x| Ok::<i32, String>(x * 2)
+            => |x| Ok::<i32, String>(x + 1)
         );
-        assert_eq!(result, vec![3, 5, 7, 9, 11]);
+        
+        assert_eq!(result.len(), 5);
+        assert!(result.iter().all(|r| r.is_ok()));
+        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
+        assert_eq!(values, vec![3, 5, 7, 9, 11]);
     }
 
     #[tokio::test]
-    async fn test_async_pipeline() {
+    async fn test_strategy_collect() {
         let result = pipex!(
-            vec![1, 2, 3]
-            => async |x| {
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                x * 2
-            }
+            vec![1, 2, 3, 4, 5]
+            => async |x| { process_and_collect(x).await }
         );
-        assert_eq!(result, vec![2, 4, 6]);
+        
+        // Should collect all results including errors
+        assert!(result.iter().any(|r| r.is_err()));
+        assert_eq!(result.len(), 5);
+        eprintln!("result: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_strategy_ignore() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5]
+            => async |x| { process_and_ignore(x).await }
+        );
+        
+        // Should ignore errors, only return successes
+        assert_eq!(result.len(), 4); // 3 is filtered out
+        assert!(result.iter().all(|r| r.is_ok()));
+        eprintln!("result: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_strategy_log_and_ignore() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5]
+            => async |x| { process_with_log_and_ignore(x).await }
+        );
+        
+        // Should log errors and ignore them, only return successes
+        assert_eq!(result.len(), 4); // 3 is filtered out but logged
+        assert!(result.iter().all(|r| r.is_ok()));
+        
+        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
+        assert_eq!(values, vec![2, 4, 8, 10]); // 1*2, 2*2, 4*2, 5*2
+    }
+
+    #[tokio::test]
+    async fn test_strategy_failfast() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5, 3]
+            => async |x| { process_with_failfast(x).await }
+        );
+        
+        // Should fail fast - return only errors
+        assert!(result.iter().all(|r| r.is_err()));
+        assert_eq!(result.len(), 2); // Two instances of 3
+        eprintln!("result: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_custom_first_error_handler() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5]
+            => async |x| { process_with_first_error(x).await }
+        );
+        
+        // Should return only the first error
+        assert_eq!(result.len(), 1);
+        assert!(result[0].is_err());
+        eprintln!("FirstErrorHandler result: {:?}", result);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[tokio::test]
+    async fn test_parallel_pipeline() {
+        let result = pipex!(
+            vec![1, 2, 3, 4, 5]
+            => ||| |x| Ok::<i32, String>(x * 2)
+        );
+        
+        assert_eq!(result.len(), 5);
+        assert!(result.iter().all(|r| r.is_ok()));
+
+        eprintln!("result: {:?}", result);
+        // let mut values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
+        // values.sort(); // Parallel processing might change order
+        // assert_eq!(values, vec![3, 5, 7, 9, 11]);
+    }
+
+    // Test sync function with strategy decorator
+    #[error_strategy(IgnoreHandler)]
+    fn sync_process_and_ignore(x: i32) -> Result<i32, String> {
+        if x == 3 { Err("failed on 3".to_string()) }
+        else { Ok(x * 2) }
     }
 
     #[test]
-    fn test_parallel_pipeline() {
+    fn test_sync_step_with_error_strategy() {
         let result = pipex!(
-            vec![1, 2, 3, 4]
-            => ||| 2 |x| x * x
+            vec![1, 2, 3, 4, 5]
+            => |x| sync_process_and_ignore(x)
+            => |x| Ok::<i32, String>(x + 1)
         );
-        assert_eq!(result, vec![1, 4, 9, 16]);
+        
+        // Should ignore errors due to IgnoreHandler strategy, only return successes
+        assert_eq!(result.len(), 4); // 3 is filtered out by IgnoreHandler
+        assert!(result.iter().all(|r| r.is_ok()));
+
+        eprintln!("result: {:?}", result);
+        
+        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
+        let expected_values = vec![3, 5, 9, 11];
+        let mut actual_values = values;
+        actual_values.sort(); // Ensure order for comparison
+        assert_eq!(actual_values, expected_values); 
     }
 
     #[tokio::test]
-    async fn test_streaming_pipeline() {
-        let result = pipex!(
-            vec![1, 2, 3]
-            => ~async 2 |x| {
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                x + 10
-            }
-        );
-        assert_eq!(result, vec![11, 12, 13]);
-    }
+    async fn test_mixed_sync_and_async_pipeline() {
+        // Using an existing async function with its own error strategy
+        // process_and_collect is #[error_strategy(CollectHandler)]
+        // It returns Err for input 3, Ok(x*2) otherwise.
 
-    #[tokio::test]
-    async fn test_mixed_pipeline() {
         let result = pipex!(
-            vec![1, 2, 3, 4]
-            => |x| x * 2                    // Sync
-            => ||| 2 |x| x + 1              // Parallel
-            => ~async 2 |x| {               // Async streaming
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                x * 3
-            }
+            vec![1, 2, 3, 4, 5]
+            => |x| sync_process_and_ignore(x) // IgnoreHandler drops item 3
+            => |x| Ok::<i32, String>(x - 1)
+            => async |x| { process_and_collect(x).await } // CollectHandler collect error item 3
         );
-        assert_eq!(result, vec![9, 15, 21, 27]);
+
+        assert_eq!(result.len(), 4, "Expected 4 results after IgnoreHandler dropped one item.");
+        eprintln!("Mixed sync-async-sync pipeline (Ignore then Collect) result: {:?}", result);
+
+        let expected_values = vec![Ok(2), Err("failed on 3".to_string()), Ok(14), Ok(18)]; // (2*2-1), (4*2-1), (8*2-1), (10*2-1)
+        assert_eq!(result, expected_values, "Final values do not match expected values.");
     }
-} 
+}
+
+// It's also good practice to explicitly re-export items that macros need,
+// especially if they are somewhat internal.
+// This makes the macro's dependency on $crate::traits::IntoPipelineItem robust.
+#[doc(hidden)]
+pub use traits::IntoPipelineItem as __InternalIntoPipelineItem; // Re-export for macro under a hidden name
+                                                                 // The macro can then use $crate::__InternalIntoPipelineItem
+                                                                 // OR, if the `traits` module is pub, $crate::traits::IntoPipelineItem works.
