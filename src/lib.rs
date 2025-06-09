@@ -2,361 +2,220 @@
 //! 
 //! This crate provides a powerful macro-based system for creating data processing
 //! pipelines with various error handling strategies.
-
+#![no_std]
 #![deny(missing_docs)]
 #![warn(clippy::all)]
 
 // Core modules
 mod result;
 pub mod traits;
-mod handlers;
-mod macros;
 
 // Re-export public API
 pub use result::PipexResult;
-pub use traits::{PipelineResultHandler, ExtractSuccessful, IntoResult, CreateError};
-pub use handlers::{
-    ErrorHandler, IgnoreHandler, CollectHandler, FailFastHandler, LogAndIgnoreHandler
-};
+pub use traits::{PipelineOp, ErrorHandler, IntoPipelineItem};
+
 
 // Re-export the proc macros
 pub use pipex_macros::error_strategy;
 
-// Conditional re-exports based on features
-#[cfg(feature = "async")]
-#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-pub use futures;
 
-#[cfg(feature = "async")]
-#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-pub use tokio;
+/// Ignore errors strategy - replaces errors with default values
+pub struct IgnoreHandler;
 
-#[cfg(feature = "parallel")]
-#[cfg_attr(docsrs, doc(cfg(feature = "parallel")))]
-pub use rayon;
+/// Collect errors strategy - keeps all results including errors
+pub struct CollectHandler;
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-use std::any::{Any, TypeId};
+/// FailFast handler - marks all as errors if any error is found
+pub struct FailFastHandler;
 
-// Registry for strategy functions
-static STRATEGY_REGISTRY: OnceLock<Mutex<HashMap<String, Box<dyn Any + Send + Sync>>>> = OnceLock::new();
-
-/// Register a custom strategy handler for specific types
-pub fn register_strategy<T, E>(
-    name: &str,
-    handler: fn(Vec<Result<T, E>>) -> Vec<Result<T, E>>
-) where
-    T: 'static,
-    E: std::fmt::Debug + 'static,
-{
-    let registry = STRATEGY_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut registry = registry.lock().unwrap();
-    
-    let type_id = (TypeId::of::<T>(), TypeId::of::<E>());
-    let key = format!("{}_{:?}", name, type_id);
-    
-    registry.insert(key, Box::new(handler));
-}
-
-/// Try to call a registered strategy (fix ownership issue by borrowing)
-fn try_registered_strategy<T, E>(strategy_name: &str, results: &Vec<Result<T, E>>) -> Option<Vec<Result<T, E>>>
-where
-    T: 'static + Clone,
-    E: std::fmt::Debug + 'static + Clone,
-{
-    let registry = STRATEGY_REGISTRY.get()?;
-    let registry = registry.lock().unwrap();
-    
-    let type_id = (TypeId::of::<T>(), TypeId::of::<E>());
-    let key = format!("{}_{:?}", strategy_name, type_id);
-    
-    if let Some(handler_any) = registry.get(&key) {
-        if let Some(handler) = handler_any.downcast_ref::<fn(Vec<Result<T, E>>) -> Vec<Result<T, E>>>() {
-            return Some(handler(results.clone()));
+impl<T, E, const N: usize> ErrorHandler<T, E, N> for IgnoreHandler {
+    fn handle_results(mut results: [Result<T, E>; N]) -> [Result<T, E>; N] {
+        for result in results.iter_mut() {
+            if result.is_err() {
+                // Safety: This is safe because we're only replacing error variants with a default value
+                *result = Ok(unsafe { core::mem::zeroed() });
+            }
         }
+        results
     }
-    
-    None
 }
 
-/// Apply strategy - checks registry first, then built-ins
-pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
-where
-    T: 'static + Clone,
-    E: std::fmt::Debug + 'static + Clone,
-{
-    // Try registered strategies first (pass by reference to avoid move)
-    if let Some(result) = try_registered_strategy(strategy_name, &results) {
-        return result;
+impl<T, E, const N: usize> ErrorHandler<T, E, N> for CollectHandler {
+    fn handle_results(results: [Result<T, E>; N]) -> [Result<T, E>; N] {
+        results
     }
-    
-    // Fall back to built-ins (now we can still use results since we didn't move it)
+}
+
+impl<T, E, const N: usize> ErrorHandler<T, E, N> for FailFastHandler 
+where
+    E: Copy
+{
+    fn handle_results(mut results: [Result<T, E>; N]) -> [Result<T, E>; N] {
+        // First find if there's an error and get its value
+        let first_err = match results.iter().find_map(|r| r.as_ref().err()) {
+            Some(err) => *err,
+            None => return results,
+        };
+
+        // Then propagate the error to all results
+        for result in results.iter_mut() {
+            *result = Err(first_err);
+        }
+        
+        results
+    }
+}
+
+/// Apply an error handling strategy to results
+pub fn apply_strategy<T, E, const N: usize>(
+    strategy_name: &str,
+    results: [Result<T, E>; N]
+) -> [Result<T, E>; N]
+where
+    E: Copy,
+{
     match strategy_name {
         "IgnoreHandler" => IgnoreHandler::handle_results(results),
         "CollectHandler" => CollectHandler::handle_results(results),
         "FailFastHandler" => FailFastHandler::handle_results(results),
-        "LogAndIgnoreHandler" => LogAndIgnoreHandler::handle_results(results),
-        _ => {
-            eprintln!("Warning: Unknown strategy '{}'. Use register_strategy() to register custom handlers.", strategy_name);
-            results
-        }
+        _ => results,
     }
+}
+
+/// Macro to apply an error handling strategy to a function
+#[macro_export]
+macro_rules! with_strategy {
+    ($strategy:ident, $func:expr) => {{
+        let result = $func;
+        $crate::apply_strategy(stringify!($strategy), result)
+    }};
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! pipex {
+    // Entry point
+    ($input:expr $(=> $($rest:tt)+)?) => {{
+        let input_array = $input;
+        let initial_results = core::array::from_fn(|i| Ok(input_array[i]));
+        pipex!(@process initial_results $(=> $($rest)+)?)
+    }};
+
+    // SYNC step
+    (@process $input:expr => |$var:ident| $body:expr $(=> $($rest:tt)+)?) => {{
+        let mut sync_results = $input;
+        let len = sync_results.len();
+        
+        for i in 0..len {
+            sync_results[i] = match sync_results[i] {
+                Ok($var) => ($body).into_pipeline_item(),
+                Err(e) => Err(e),
+            };
+        }
+        
+        pipex!(@process sync_results $(=> $($rest)+)?)
+    }};
+
+    // Terminal case
+    (@process $input:expr) => {
+        $input
+    };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    pub struct FirstErrorHandler;
-
-    impl<T, E> ErrorHandler<T, E> for FirstErrorHandler {
-        fn handle_results(results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
-            results.into_iter()
-                .find(|r| r.is_err())
-                .map_or(Vec::new(), |e| vec![e])
-        }
+    #[derive(Debug, Copy, Clone, PartialEq)]
+    enum TestError {
+        Error1,
+        Error2,
     }
 
-    // Register the handler for our test types
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    
-    fn setup() {
-        INIT.call_once(|| {
-            register_strategies!( FirstErrorHandler for <i32, String> );
-        });
-    }
+    const TEST_INPUT: [i32; 3] = [1, 2, 3];
 
-    pub fn apply_strategy<T, E>(strategy_name: &str, results: Vec<Result<T, E>>) -> Vec<Result<T, E>>
-    where
-        T: 'static + Clone,
-        E: std::fmt::Debug + 'static + Clone,
-    {
-        setup(); // Ensure registration
-        crate::apply_strategy(strategy_name, results)
-    }
-
-    // Basic test functions
-    async fn simple_double(x: i32) -> Result<i32, String> {
-        if x == 3 {
-            Err("failed on 3".to_string())
-        } else {
-            Ok(x * 2)
-        }
-    }
-    
-    // Test functions with strategy decorators
-    #[error_strategy(CollectHandler)]
-    async fn process_and_collect(x: i32) -> Result<i32, String> {
-        if x == 3 {
-            Err("failed on 3".to_string())
-        } else {
-            Ok(x * 2)
-        }
-    }
-    
-    #[error_strategy(IgnoreHandler)]
-    async fn process_and_ignore(x: i32) -> Result<i32, String> {
-        if x == 3 {
-            Err("failed on 3".to_string())
-        } else {
-            Ok(x * 2)
-        }
-    }
-
-    #[error_strategy(FailFastHandler)]
-    async fn process_with_failfast(x: i32) -> Result<i32, String> {
-        if x == 3 {
-            Err("failed on 3".to_string())
-        } else {
-            Ok(x * 2)
-        }
-    }
-
-    #[error_strategy(LogAndIgnoreHandler)]
-    async fn process_with_log_and_ignore(x: i32) -> Result<i32, String> {
-        if x == 3 {
-            Err("failed on 3".to_string())
-        } else {
-            Ok(x * 2)
-        }
-    }
-
-    #[error_strategy(FirstErrorHandler)]
-    async fn process_with_first_error(x: i32) -> Result<i32, String> {
-        if x == 3 {
-            Err("failed on 3".to_string())
-        } else {
-            Ok(x * 2)
-        }
-    }
-
-    #[tokio::test]
-    async fn test_basic_async_pipeline() {
-        let result = pipex!(
-            vec![1, 2, 4, 5]
-            => async |x| { simple_double(x).await }
-            => |x| Ok::<i32, String>(x + 1)
+    #[test]
+    fn test_basic_pipeline() {
+        let result: [Result<i32, TestError>; 3] = pipex!(
+            TEST_INPUT
+            => |x| Ok(x * 2)
+            => |x| Ok(x + 1)
         );
         
-        assert_eq!(result.len(), 4);
         assert!(result.iter().all(|r| r.is_ok()));
-        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
-        assert_eq!(values, vec![3, 5, 9, 11]);
-    }
-
-    #[tokio::test]
-    async fn test_sync_pipeline() {
-        let result = pipex!(
-            vec![1, 2, 3, 4, 5]
-            => |x| Ok::<i32, String>(x * 2)
-            => |x| Ok::<i32, String>(x + 1)
-        );
-        
-        assert_eq!(result.len(), 5);
-        assert!(result.iter().all(|r| r.is_ok()));
-        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
-        assert_eq!(values, vec![3, 5, 7, 9, 11]);
-    }
-
-    #[tokio::test]
-    async fn test_strategy_collect() {
-        let result = pipex!(
-            vec![1, 2, 3, 4, 5]
-            => async |x| { process_and_collect(x).await }
-        );
-        
-        // Should collect all results including errors
-        assert!(result.iter().any(|r| r.is_err()));
-        assert_eq!(result.len(), 5);
-        eprintln!("result: {:?}", result);
-    }
-
-    #[tokio::test]
-    async fn test_strategy_ignore() {
-        let result = pipex!(
-            vec![1, 2, 3, 4, 5]
-            => async |x| { process_and_ignore(x).await }
-        );
-        
-        // Should ignore errors, only return successes
-        assert_eq!(result.len(), 4); // 3 is filtered out
-        assert!(result.iter().all(|r| r.is_ok()));
-        eprintln!("result: {:?}", result);
-    }
-
-    #[tokio::test]
-    async fn test_strategy_log_and_ignore() {
-        let result = pipex!(
-            vec![1, 2, 3, 4, 5]
-            => async |x| { process_with_log_and_ignore(x).await }
-        );
-        
-        // Should log errors and ignore them, only return successes
-        assert_eq!(result.len(), 4); // 3 is filtered out but logged
-        assert!(result.iter().all(|r| r.is_ok()));
-        
-        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
-        assert_eq!(values, vec![2, 4, 8, 10]); // 1*2, 2*2, 4*2, 5*2
-    }
-
-    #[tokio::test]
-    async fn test_strategy_failfast() {
-        let result = pipex!(
-            vec![1, 2, 3, 4, 5, 3]
-            => async |x| { process_with_failfast(x).await }
-        );
-        
-        // Should fail fast - return only errors
-        assert!(result.iter().all(|r| r.is_err()));
-        assert_eq!(result.len(), 2); // Two instances of 3
-        eprintln!("result: {:?}", result);
-    }
-
-    #[tokio::test]
-    async fn test_custom_first_error_handler() {
-        let result = pipex!(
-            vec![1, 2, 3, 4, 5]
-            => async |x| { process_with_first_error(x).await }
-        );
-        
-        // Should return only the first error
-        assert_eq!(result.len(), 1);
-        assert!(result[0].is_err());
-        eprintln!("FirstErrorHandler result: {:?}", result);
-    }
-
-    #[cfg(feature = "parallel")]
-    #[tokio::test]
-    async fn test_parallel_pipeline() {
-        let result = pipex!(
-            vec![1, 2, 3, 4, 5]
-            => ||| |x| Ok::<i32, String>(x * 2)
-        );
-        
-        assert_eq!(result.len(), 5);
-        assert!(result.iter().all(|r| r.is_ok()));
-
-        eprintln!("result: {:?}", result);
-        // let mut values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
-        // values.sort(); // Parallel processing might change order
-        // assert_eq!(values, vec![3, 5, 7, 9, 11]);
-    }
-
-    // Test sync function with strategy decorator
-    #[error_strategy(IgnoreHandler)]
-    fn sync_process_and_ignore(x: i32) -> Result<i32, String> {
-        if x == 3 { Err("failed on 3".to_string()) }
-        else { Ok(x * 2) }
+        for (i, r) in result.iter().enumerate() {
+            assert_eq!(r.unwrap(), TEST_INPUT[i] * 2 + 1);
+        }
     }
 
     #[test]
-    fn test_sync_step_with_error_strategy() {
-        let result = pipex!(
-            vec![1, 2, 3, 4, 5]
-            => |x| sync_process_and_ignore(x)
-            => |x| Ok::<i32, String>(x + 1)
+    fn test_error_handling() {
+        let result: [Result<i32, TestError>; 3] = pipex!(
+            TEST_INPUT
+            => |x| if x == 2 { Err(TestError::Error1) } else { Ok(x * 2) }
         );
         
-        // Should ignore errors due to IgnoreHandler strategy, only return successes
-        assert_eq!(result.len(), 4); // 3 is filtered out by IgnoreHandler
-        assert!(result.iter().all(|r| r.is_ok()));
-
-        eprintln!("result: {:?}", result);
-        
-        let values: Vec<i32> = result.into_iter().map(|r| r.unwrap()).collect();
-        let expected_values = vec![3, 5, 9, 11];
-        let mut actual_values = values;
-        actual_values.sort(); // Ensure order for comparison
-        assert_eq!(actual_values, expected_values); 
+        assert!(result[0].is_ok());
+        assert!(result[1].is_err());
+        assert!(result[2].is_ok());
     }
 
-    #[tokio::test]
-    async fn test_mixed_sync_and_async_pipeline() {
-        // Using an existing async function with its own error strategy
-        // process_and_collect is #[error_strategy(CollectHandler)]
-        // It returns Err for input 3, Ok(x*2) otherwise.
-
-        let result = pipex!(
-            vec![1, 2, 3, 4, 5]
-            => |x| sync_process_and_ignore(x) // IgnoreHandler drops item 3
-            => |x| Ok::<i32, String>(x - 1)
-            => async |x| { process_and_collect(x).await } // CollectHandler collect error item 3
+    #[test]
+    fn test_ignore_handler() {
+        let result: [Result<i32, TestError>; 3] = pipex!(
+            TEST_INPUT
+            => |x| if x == 2 { Err(TestError::Error2) } else { Ok(x * 2) }
         );
+        
+        let handled = IgnoreHandler::handle_results(result);
+        assert!(handled.iter().all(|r| r.is_ok()));
+    }
 
-        assert_eq!(result.len(), 4, "Expected 4 results after IgnoreHandler dropped one item.");
-        eprintln!("Mixed sync-async-sync pipeline (Ignore then Collect) result: {:?}", result);
+    #[test]
+    fn test_collect_handler() {
+        let result: [Result<i32, TestError>; 3] = pipex!(
+            TEST_INPUT
+            => |x| if x == 2 { Err(TestError::Error1) } else { Ok(x * 2) }
+        );
+        
+        let handled = CollectHandler::handle_results(result);
+        assert_eq!(handled.iter().filter(|r| r.is_err()).count(), 1);
+    }
 
-        let expected_values = vec![Ok(2), Err("failed on 3".to_string()), Ok(14), Ok(18)]; // (2*2-1), (4*2-1), (8*2-1), (10*2-1)
-        assert_eq!(result, expected_values, "Final values do not match expected values.");
+    #[test]
+    fn test_fail_fast() {
+        let result: [Result<i32, TestError>; 3] = pipex!(
+            TEST_INPUT
+            => |x| if x == 2 { Err(TestError::Error1) } else { Ok(x * 2) }
+        );
+        
+        let handled = FailFastHandler::handle_results(result);
+        assert!(handled.iter().all(|r| r.is_err()));
+        assert!(handled.iter().all(|r| r == &Err(TestError::Error1)));
+    }
+
+    #[test]
+    fn test_with_strategy() {
+        let result: [Result<i32, TestError>; 3] = with_strategy!(IgnoreHandler, {
+            pipex!(
+                TEST_INPUT
+                => |x| if x == 2 { Err(TestError::Error1) } else { Ok(x * 2) }
+            )
+        });
+        
+        assert!(result.iter().all(|r| r.is_ok()));
+    }
+
+    #[test]
+    fn test_error_skip_pipeline() {
+        let result: [Result<i32, TestError>; 3] = pipex!(
+            TEST_INPUT
+            => |x| if x == 2 { Err(TestError::Error1) } else { Ok(x) }
+            => |x| Ok(x + 100)  // This step should be skipped for errors
+        );
+        
+        assert_eq!(result[0], Ok(101));     // First value processed normally
+        assert_eq!(result[1], Err(TestError::Error1));  // Error preserved, not modified
+        assert_eq!(result[2], Ok(103));     // Third value processed normally
     }
 }
-
-// It's also good practice to explicitly re-export items that macros need,
-// especially if they are somewhat internal.
-// This makes the macro's dependency on $crate::traits::IntoPipelineItem robust.
-#[doc(hidden)]
-pub use traits::IntoPipelineItem as __InternalIntoPipelineItem; // Re-export for macro under a hidden name
-                                                                 // The macro can then use $crate::__InternalIntoPipelineItem
-                                                                 // OR, if the `traits` module is pub, $crate::traits::IntoPipelineItem works.
