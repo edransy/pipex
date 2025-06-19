@@ -1,232 +1,183 @@
-# Pipex 🚀
+# Solana Pipex Example
 
-[![Crates.io](https://img.shields.io/crates/v/pipex.svg)](https://crates.io/crates/pipex)
-[![Documentation](https://docs.rs/pipex/badge.svg)](https://docs.rs/pipex)
-[![License](https://img.shields.io/crates/l/pipex.svg)](https://github.com/edransy/pipex)
+A minimal Solana program demonstrating the revolutionary `pipex` pipeline processing library with compile-time pure function verification.
 
-A powerful functional pipeline macro for Rust that combines synchronous, asynchronous, and parallel operations with extensible error handling strategies.
+## Features Demonstrated
 
-## ✨ Features
+🚀 **Pipeline Processing**: Clean separation of impure I/O and pure business logic  
+🔒 **Compile-time Security**: Pure functions verified at compile time with zero runtime overhead  
+⚡ **Perfect for Solana**: Optimized for Solana's account model and compute budget  
+🎯 **Real-world Pattern**: Demonstrates actual DeFi swap logic with AMM calculations  
 
-- **🔄 Sync Operations**: Chain regular synchronous transformations
-- **⚡ Async Operations**: Handle asynchronous work
-- **🚀 Parallel Processing**: Leverage multiple CPU cores with Rayon
-- **🛡️ Error Handling**: Extensible error handling strategies via proc macros
-- **🔀 Mixed Workloads**: Seamlessly combine different operation types
-- **📦 Modular**: Optional features for async and parallel processing
+## What This Example Shows
 
-## 🚀 Quick Start
+This program implements a simple DEX (Decentralized Exchange) that demonstrates:
 
-Add this to your `Cargo.toml`:
-
-```toml
-[features]
-default = ["async", "parallel"]
-async = []
-parallel = []
-
-[dependencies]
-pipex = { version = "0.1.13", features = ["full"] }
-tokio = { version = "1", features = ["full", "macros", "rt-multi-thread"] }
-```
-
-
-### Error Handling Strategies
+1. **Pipeline Pattern**: `load → validate → calculate → save`
+2. **Pure Functions**: Business logic isolated and compile-time verified
+3. **Error Handling**: Graceful error propagation through the pipeline
+4. **Solana Integration**: Real Anchor program with proper account management
 
 ```rust
-use pipex::*;
-
-#[error_strategy(IgnoreHandler)]
-async fn process_even(x: i32) -> Result<i32, String> {
-    if x % 2 == 0 {
-        Ok(x * 2)
-    } else {
-        Err("Odd number".to_string())
-    }
-}
-
-#[error_strategy(CollectHandler)]
-async fn always_succeed(x: i32) -> Result<i32, String> {
-    Ok(x + 1)
-}
-
-#[tokio::main]
-async fn main() {
-    // This will ignore errors from odd numbers
-    let result1 = pipex!(
-        vec![1, 2, 3, 4, 5]
-        => async |x| { process_even(x).await }
-    );
-    // Only even numbers are processed: [4, 8]
-    
-    // This will collect all results including errors
-    let result2 = pipex!(
-        vec![1, 2, 3, 4, 5]
-        => async |x| { always_succeed(x).await }
-    );
-    // All numbers processed: [Ok(2), Ok(3), Ok(4), Ok(5), Ok(6)]
-}
+let result: [Result<SwapContext, SwapError>; 1] = pipex!(
+    pipeline_input
+    => |ctx| load_swap_state(ctx)        // IMPURE: Load current state
+    => |ctx| validate_swap_pure(ctx)     // PURE: Validate transaction
+    => |ctx| calculate_swap_pure(ctx)    // PURE: Calculate new state
+    => |ctx| save_swap_state(ctx)        // IMPURE: Save updates
+);
 ```
 
-### Parallel Processing
+## Prerequisites
 
+1. Install Rust: https://rustup.rs/
+2. Install Solana CLI: https://docs.solana.com/cli/install-solana-cli-tools
+3. Install Anchor: https://www.anchor-lang.com/docs/installation
+4. Install Node.js and Yarn
+
+## Build Instructions
+
+### 1. Clone and Setup
+
+```bash
+# Make sure you're in the pipex repository root
+# This example uses the pipex library as a local dependency
+
+# Create the example directory structure
+mkdir solana-pipex-example
+cd solana-pipex-example
+
+# Copy the files from this example into the directory
+# (You'll have created these files following the instructions above)
+```
+
+### 2. Install Dependencies
+
+```bash
+# Install Node.js dependencies
+yarn install
+
+# Build the pipex library first (from the pipex repo root)
+cd ../
+cargo build
+cd solana-pipex-example/
+```
+
+### 3. Build the Program
+
+```bash
+# Build the Solana program
+anchor build
+
+# This will:
+# - Compile the Rust program with pipex integration
+# - Generate TypeScript types
+# - Create the program binary
+```
+
+### 4. Run Tests
+
+```bash
+# Start a local Solana validator (in a separate terminal)
+solana-test-validator
+
+# Run the tests
+anchor test --skip-local-validator
+
+# Expected output:
+# ✓ Initializes a liquidity pool
+# ✓ Executes a successful token swap using pipex pipeline
+# ✓ Fails swap due to insufficient balance
+# ✓ Demonstrates the power of pure functions and pipeline
+```
+
+## Test Results Explanation
+
+### Test 1: Pool Initialization
+Creates a liquidity pool with 1M tokens of each type, demonstrating basic account creation.
+
+### Test 2: Successful Swap
+Shows the complete pipeline in action:
+- Validates user has sufficient balance
+- Calculates AMM swap amounts with fees
+- Updates both pool and user state atomically
+
+### Test 3: Error Handling
+Demonstrates how pure validation functions catch errors before any state changes.
+
+### Test 4: Pipeline Demo
+Educational test showing the architectural benefits.
+
+## Revolutionary Aspects
+
+This example showcases why `pipex` is revolutionary for Solana development:
+
+### 1. Compile-Time Security
 ```rust
-use pipex::pipex;
-
-fn heavy_computation(n: i32) -> i32 {
-    // Simulate CPU-intensive work
-    (1..=n).sum::<i32>() % 1000
-}
-
-#[tokio::main]
-async fn main() {
-    let result = pipex!(
-        vec![100, 200, 300, 400, 500]
-        => ||| |n| { heavy_computation(n) } // Parallel processing
-        => |result| Ok::<_, String>(format!("Computed: {}", result))
-    );
-    
-    println!("Results: {:?}", result);
+#[pure]
+fn validate_swap_pure(ctx: SwapContext) -> Result<SwapContext, SwapError> {
+    // ✅ Cannot access external state
+    // ✅ Cannot call impure functions  
+    // ✅ Cannot use unsafe code
+    // ✅ All verified at compile time!
 }
 ```
 
-## 📖 Pipeline Syntax
+### 2. Zero Runtime Overhead
+- No runtime checks
+- No allocations in pure functions
+- Perfect for Solana's compute budget
 
-| Syntax | Description | Example | Requires Feature |
-|--------|-------------|---------|------------------|
-| `\|x\| expr` | Synchronous transformation | `\|x\| Ok::<_, String>(x * 2)` | None |
-| `async \|x\| { ... }` | Asynchronous operation | `async \|x\| { fetch(x).await }` | `async` |
-| `\|\|\| \|x\| { ... }` | Parallel processing | `\|\|\| \|x\| { cpu_work(x) }` | `parallel` |
+### 3. Clear Architecture
+- Impure functions clearly marked
+- Business logic isolated in pure functions
+- State changes explicit and controlled
 
-## 🛡️ Error Handling Strategies
+### 4. Perfect Solana Fit
+The pipeline pattern matches Solana's account model exactly:
+1. Load accounts (impure)
+2. Validate business rules (pure)
+3. Calculate new state (pure)
+4. Save updates (impure)
 
-Pipex provides several built-in error handling strategies:
+## Real-World Applications
 
-| Strategy | Description | Behavior |
-|----------|-------------|----------|
-| `IgnoreHandler` | Ignore errors | Only successful results are kept |
-| `CollectHandler` | Collect all | Both success and error results are kept |
-| `FailFastHandler` | Fail fast | Only error results are kept |
-| `LogAndIgnoreHandler` | Log and ignore | Errors are logged to stderr, then ignored |
+This pattern is perfect for:
+- **DeFi Protocols**: AMMs, lending, derivatives
+- **Gaming**: State transitions, rewards, battles
+- **NFT Marketplaces**: Pricing, royalties, transfers
+- **DAOs**: Voting, proposals, treasury management
 
-### Custom Error Handlers
+## File Structure
 
-You can implement your own error handling strategies:
-
-```rust
-use pipex::*;
-
-// Example: A handler that collects only successful results and reverses their order.
-pub struct ReverseSuccessHandler;
-
-impl<T, E> ErrorHandler<T, E> for ReverseSuccessHandler {
-    fn handle_results(results: Vec<Result<T, E>>) -> Vec<Result<T, E>> {
-        let mut successes: Vec<Result<T, E>> = results
-            .into_iter()
-            .filter(|r| r.is_ok())
-            .collect();
-        successes.reverse();
-        successes
-    }
-}
-
-#[error_strategy(ReverseSuccessHandler)]
-async fn process_items_with_reverse(x: i32) -> Result<i32, String> {
-    if x == 3 { // Example condition for failure
-        Err("processing failed for item 3".to_string())
-    } else {
-        Ok(x * 2) // Example processing for success
-    }
-}
+```
+solana-pipex-example/
+├── Anchor.toml              # Anchor configuration
+├── Cargo.toml               # Workspace configuration
+├── package.json             # Node.js dependencies
+├── tsconfig.json            # TypeScript configuration
+├── programs/
+│   └── solana-pipex-example/
+│       ├── Cargo.toml       # Program dependencies
+│       └── src/
+│           └── lib.rs       # Main program with pipex integration
+└── tests/
+    └── solana-pipex-example.ts  # TypeScript tests
 ```
 
-### Registering Custom Strategies
+## Next Steps
 
-For `pipex` to recognize and use your custom error handlers with specific data types (e.g. `Result<i32, String>`), you may need to register them. This is typically done once, for instance, at the beginning of your `main` function, using the `register_strategies!` macro.
+1. **Extend the Example**: Add more complex DeFi features
+2. **Performance Testing**: Measure compute unit usage
+3. **Security Audit**: Review the pure function guarantees
+4. **Integration**: Use in your own Solana programs
 
-This macro ensures that the procedural macros used by `pipex` can correctly associate your handlers with the functions they annotate.
+## Learn More
 
-```rust
-use pipex::*;
+- [Pipex Documentation](../README.md)
+- [Anchor Framework](https://www.anchor-lang.com/)
+- [Solana Program Library](https://spl.solana.com/)
 
-// Assuming LastErrorHandler and ReverseSuccessHandler are defined structs
-// that implement the ErrorHandler<T, E> trait. For example:
-pub struct LastErrorHandler;
-impl<T, E> ErrorHandler<T, E> for LastErrorHandler { /* ... */ }
+---
 
-pub struct ReverseSuccessHandler; // As defined in the example above
-impl<T, E> ErrorHandler<T, E> for ReverseSuccessHandler { /* ... */ }
-
-
-#[tokio::main]
-fn main() {
-    // Register your custom handlers for specific type signatures
-    register_strategies!(
-        LastErrorHandler, ReverseSuccessHandler for <i32, String>
-    );
-
-    // Now, functions like:
-    #[error_strategy(LastErrorHandler)]
-    async fn my_func_last_error(x: i32) -> Result<i32, String> { ... }
-
-    #[error_strategy(ReverseSuccessHandler)]
-    async fn my_func_reverse(x: i32) -> Result<i32, String> { ... }
-
-    // ...can be used in pipex! pipelines that operate on Result<i32, String>.
-}
-```
-
-## 📚 Complete Examples
-
-### Data Processing Pipeline
-
-```rust
-use pipex::*;
-
-#[error_strategy(LogAndIgnoreHandler)]
-async fn fetch_user_data(id: i32) -> Result<String, String> {
-    // Simulate network request that might fail
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    if id % 10 == 0 {
-        Err(format!("Failed to fetch user {}", id))
-    } else {
-        Ok(format!("User {} data", id))
-    }
-}
-
-fn process_data(data: String) -> usize {
-    // Simulate CPU-intensive processing
-    data.chars().filter(|c| c.is_alphanumeric()).count()
-}
-
-#[tokio::main]
-async fn main() {
-    let user_ids = (1..=20).collect::<Vec<_>>();
-    
-    let result = pipex!(
-        user_ids
-        => async |id| { fetch_user_data(id).await }  // Async fetch with error handling
-        => ||| |data| { process_data(data) }         // Parallel processing
-        => |count| Ok::<_, String>(format!("Processed {} chars", count)) // Final transformation
-    );
-    
-    println!("Processed {} users successfully", result.len());
-}
-```
-
-
-
-
-## 📋 Requirements
-
-- Rust 1.75.0 or later
-- For async features: tokio runtime
-- For parallel features: compatible with rayon
-
-## 🔧 Contributing
-
-Contributions are welcome! Please see our [contributing guidelines](CONTRIBUTING.md).
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE-MIT](LICENSE-MIT) file for details. 
+*This example demonstrates the future of secure, efficient Solana program development with `pipex`!* 🚀 

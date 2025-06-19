@@ -74,17 +74,20 @@ impl VisitMut for PurityCheckVisitor {
                         let pascal_case_ident = to_pascal_case(&ident_str);
                         last_segment.ident = Ident::new(&pascal_case_ident, last_segment.ident.span());
 
+                        // Manually recurse before we replace the node
                         visit_mut::visit_expr_call_mut(self, call_expr);
                         
                         let new_node = syn::parse_quote!({
                             {
+                                // This is a compile-time check. If the ZST for the called function
+                                // doesn't exist or doesn't implement `IsPure`, this will fail.
                                 fn _check<T: crate::traits::IsPure>(_: T) {}
                                 _check(#zst_path);
                             }
                             #call_expr
                         });
                         *i = new_node;
-                        return;
+                        return; // Return to avoid visiting the new node and causing infinite recursion
                     }
                 } else {
                     self.errors.push(Error::new_spanned(&call_expr.func, "closures and other complex function call expressions are not supported in pure functions"));
@@ -93,6 +96,7 @@ impl VisitMut for PurityCheckVisitor {
             _ => {}
         }
         
+        // Default recursion for all other expression types.
         visit_mut::visit_expr_mut(self, i);
     }
 }
