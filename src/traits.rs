@@ -1,5 +1,4 @@
 //! Core traits for pipeline functionality
-#![no_std]
 
 // use crate::PipexResult;
 
@@ -132,6 +131,9 @@ where
         results
     }
 }
+
+/// A marker trait for pure functions.
+pub trait IsPure {}
 
 // // Implementations for Vec<T>
 // impl<T> ExtractSuccessful<T> for Vec<T> {

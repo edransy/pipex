@@ -9,8 +9,138 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
     parse_macro_input, ItemFn, Type, ReturnType, GenericArgument, PathArguments,
-    parse::Parse, parse::ParseStream, Error, Result as SynResult
+    parse::Parse, parse::ParseStream, Error, Result as SynResult,
+    visit_mut::{self, VisitMut}, Expr, Ident,
+    spanned::Spanned,
 };
+
+/// Converts a string from snake_case to PascalCase.
+fn to_pascal_case(s: &str) -> String {
+    let mut pascal = String::new();
+    let mut capitalize = true;
+    for c in s.chars() {
+        if c == '_' {
+            capitalize = true;
+        } else if capitalize {
+            pascal.push(c.to_ascii_uppercase());
+            capitalize = false;
+        } else {
+            pascal.push(c);
+        }
+    }
+    pascal
+}
+
+/// A visitor that recursively checks a function for impurity and injects purity checks for function calls.
+struct PurityCheckVisitor {
+    errors: Vec<Error>,
+}
+
+impl VisitMut for PurityCheckVisitor {
+    fn visit_expr_mut(&mut self, i: &mut Expr) {
+        match i {
+            Expr::Unsafe(e) => {
+                self.errors.push(Error::new(
+                    e.span(),
+                    "impure `unsafe` block found in function marked as `pure`",
+                ));
+            }
+            Expr::Macro(e) => {
+                if e.mac.path.is_ident("asm") {
+                    self.errors.push(Error::new(
+                        e.span(),
+                        "impure inline assembly found in function marked as `pure`",
+                    ));
+                }
+            }
+            Expr::MethodCall(e) => {
+                self.errors.push(Error::new(
+                    e.span(), "method calls are not supported in pure functions"
+                ));
+            }
+            Expr::Call(call_expr) => {
+                if let Expr::Path(expr_path) = &*call_expr.func {
+                    let path = &expr_path.path;
+                    if let Some(segment) = path.segments.last() {
+                        if segment.ident == "Ok" || segment.ident == "Err" {
+                            visit_mut::visit_expr_call_mut(self, call_expr);
+                            return;
+                        }
+                    }
+
+                    let mut zst_path = path.clone();
+                    if let Some(last_segment) = zst_path.segments.last_mut() {
+                        let ident_str = last_segment.ident.to_string();
+                        let pascal_case_ident = to_pascal_case(&ident_str);
+                        last_segment.ident = Ident::new(&pascal_case_ident, last_segment.ident.span());
+
+                        visit_mut::visit_expr_call_mut(self, call_expr);
+                        
+                        let new_node = syn::parse_quote!({
+                            {
+                                fn _check<T: crate::traits::IsPure>(_: T) {}
+                                _check(#zst_path);
+                            }
+                            #call_expr
+                        });
+                        *i = new_node;
+                        return;
+                    }
+                } else {
+                    self.errors.push(Error::new_spanned(&call_expr.func, "closures and other complex function call expressions are not supported in pure functions"));
+                }
+            }
+            _ => {}
+        }
+        
+        visit_mut::visit_expr_mut(self, i);
+    }
+}
+
+/// The `pure` attribute macro.
+///
+/// This macro checks if a function is "pure". A function is pure if:
+/// 1. It contains no `unsafe` blocks or inline assembly (`asm!`).
+/// 2. It does not call any methods.
+/// 3. It only calls other functions that are themselves marked `#[pure]`.
+#[proc_macro_attribute]
+pub fn pure(_args: TokenStream, item: TokenStream) -> TokenStream {
+    let mut input_fn = parse_macro_input!(item as ItemFn);
+
+    let mut visitor = PurityCheckVisitor { errors: vec![] };
+
+    // Clone the function body's box, and visit the block inside.
+    let mut new_body_box = input_fn.block.clone();
+    visitor.visit_block_mut(&mut new_body_box);
+
+    if !visitor.errors.is_empty() {
+        let combined_errors = visitor.errors.into_iter().reduce(|mut a, b| {
+            a.combine(b);
+            a
+        });
+        if let Some(errors) = combined_errors {
+            return errors.to_compile_error().into();
+        }
+    }
+
+    // Replace the old body with the new one containing the checks.
+    input_fn.block = new_body_box;
+
+    // Generate the ZST and IsPure impl.
+    let fn_name_str = input_fn.sig.ident.to_string();
+    let zst_name = Ident::new(&to_pascal_case(&fn_name_str), input_fn.sig.ident.span());
+
+    let expanded = quote! {
+        #input_fn
+
+        #[doc(hidden)]
+        struct #zst_name;
+        #[doc(hidden)]
+        impl crate::traits::IsPure for #zst_name {}
+    };
+
+    TokenStream::from(expanded)
+}
 
 /// Parser for attribute arguments
 struct AttributeArgs {
