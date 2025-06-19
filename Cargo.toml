@@ -25,19 +25,5 @@ include = [
 # Proc macro crate dependency - will be bundled when published
 pipex-macros = { path = "./pipex-macros", version = "0.1.14" }
 
-# Regular dependencies
-futures = { version = "0.3", optional = true }
-rayon = { version = "1.7", optional = true }
-tokio = { version = "1.0", features = ["full"], optional = true }
-async-trait = { version = "0.1", optional = true }
-
 [dev-dependencies]
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
-tokio-test = "0.4"
 criterion = "0.5"
-
-[features]
-default = ["async", "parallel"]
-async = ["futures", "tokio", "async-trait"]
-parallel = ["rayon"]
-full = ["async", "parallel"]
