@@ -10,7 +10,6 @@
 /// - `|x| expr` - Synchronous transformation
 /// - `async |x| { ... }` - Asynchronous operation  
 /// - `||| |x| expr` - Parallel processing (requires "parallel" feature)
-/// ```
 #[macro_export]
 macro_rules! pipex {
     // Entry point
@@ -120,7 +119,7 @@ macro_rules! pipex {
     (@process $input:expr) => {{
         $input.into_iter().collect::<Vec<_>>()
     }};
-} 
+}
 
 /// Convenience macro to register multiple strategies at once
 /// 
