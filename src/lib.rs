@@ -474,7 +474,7 @@ mod tests {
         Ok(result)
     }
     
-        #[pure]
+    #[pure]
     #[memoized(capacity = 100)]
     fn expensive_computation(x: i32, y: i32) -> i32 {
         // Simulate expensive computation with pure operations only
@@ -486,7 +486,7 @@ mod tests {
     }
     
     // Non-memoized version for comparison
-        #[pure]
+    #[pure]
     fn fibonacci_regular(n: u64) -> u64 {
         if n <= 1 { 
             n 
@@ -890,8 +890,6 @@ mod tests {
             input_data
             => gpu ||| |x| (x * x + 1.0) * x.sin() + x.cos() * (x + 3.14159) - x.sqrt()
             // 🔥 Complex expression: mixed operations, multiple math functions, constants!
-            // More conservative but still demonstrates transpiler capabilities
-            // Equivalent to: (x² + 1) * sin(x) + cos(x) * (x + π) - √x
         );
         
         assert_eq!(result.len(), 4);
