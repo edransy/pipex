@@ -1,0 +1,20 @@
+[package]
+name = "pipex-macros"
+version = "0.1.4"
+edition = "2024"
+authors = ["Tarik Sidran <sidrantarik@gmail.com>"]
+description = "Procedural macros for the pipex crate - error handling strategies and pipeline decorators"
+license = "MIT"
+repository = "https://github.com/edransy/pipex"
+homepage = "https://github.com/edransy/pipex"
+documentation = "https://docs.rs/pipex-macros"
+keywords = ["macros", "proc-macro", "error-handling", "pipeline"]
+categories = ["development-tools::procedural-macro-helpers", "rust-patterns"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] } 

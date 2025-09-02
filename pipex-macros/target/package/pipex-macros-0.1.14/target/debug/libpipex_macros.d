@@ -1,0 +1,1 @@
+/Users/dransy/Documents/pipex/pipex-macros/target/package/pipex-macros-0.1.14/target/debug/libpipex_macros.dylib: /Users/dransy/Documents/pipex/pipex-macros/target/package/pipex-macros-0.1.14/src/lib.rs
