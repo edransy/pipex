@@ -161,3 +161,18 @@ impl<T: 'static, E: std::fmt::Debug> IntoPipelineItem for PipexResult<T, E> {
         }
     }
 }
+
+/// Marker trait for pure functions.
+/// 
+/// This trait is automatically implemented by the `#[pure]` macro for functions
+/// that are verified to be pure. Pure functions are deterministic, have no side effects,
+/// and are safe to use in pipelines.
+/// 
+/// # Safety
+/// 
+/// This trait should only be implemented by the `#[pure]` macro. Manual implementation
+/// is not supported and may lead to undefined behavior.
+#[doc(hidden)]
+pub trait IsPure {
+    // This trait has no methods - it's just a marker
+}

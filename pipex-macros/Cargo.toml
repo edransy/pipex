@@ -1,6 +1,6 @@
 [package]
 name = "pipex-macros"
-version = "0.1.14"
+version = "0.1.15"
 edition = "2024"
 authors = ["Tarik Sidran <sidrantarik@gmail.com>"]
 description = "Procedural macros for the pipex crate - error handling strategies and pipeline decorators"
@@ -17,4 +17,4 @@ proc-macro = true
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"
-syn = { version = "2.0", features = ["full", "extra-traits"] } 
+syn = { version = "2.0", features = ["full", "extra-traits", "visit-mut"] } 
