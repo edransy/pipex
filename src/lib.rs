@@ -5,6 +5,7 @@
 
 #![deny(missing_docs)]
 #![warn(clippy::all)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // Core modules
 mod result;
